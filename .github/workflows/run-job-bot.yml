@@ -19,7 +19,6 @@ jobs:
     timeout-minutes: 40
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -50,16 +49,12 @@ jobs:
       - name: Run Job Bot
         env:
           POST_URL: ${{ github.event.inputs.post_url || github.event.client_payload.post_url }}
-
           GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
-
           GEMINI_MODEL_NAME: "gemini-3.6-flash"
-
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
         run: |
           python bg_auto_job_bot.py
 
