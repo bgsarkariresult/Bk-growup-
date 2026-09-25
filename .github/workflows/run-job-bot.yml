@@ -1,19 +1,17 @@
 ```yaml
 name: Run Job Bot
 
-# Option 1: GitHub ke Actions tab se manually chalane ke liye
-# Option 2: Telegram bot workflow ko repository_dispatch se automatically trigger karta hai
-
 on:
   workflow_dispatch:
     inputs:
       post_url:
-        description: "Blogger Post URL (jaise: https://.../rrc-nr-pet-result-....html)"
+        description: "Blogger Post URL"
         required: true
         type: string
 
   repository_dispatch:
-    types: [run_job_bot]
+    types:
+      - run_job_bot
 
 jobs:
   run-bot:
@@ -21,39 +19,51 @@ jobs:
     timeout-minutes: 40
 
     steps:
-      - name: Repo checkout karo
+
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Python setup karo
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: ffmpeg install karo
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: Python packages install karo
+      - name: Install FFmpeg
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: YouTube credentials wapas banao
+      - name: Create YouTube credentials
+        env:
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
         run: |
-          printf '%s' '${{ secrets.YOUTUBE_CLIENT_SECRET }}' > client_secrets.json
-          printf '%s' '${{ secrets.YOUTUBE_TOKEN }}' > token.json
+          printf '%s' "$YOUTUBE_CLIENT_SECRET" > client_secrets.json
+          printf '%s' "$YOUTUBE_TOKEN" > token.json
 
-      - name: Bot chalao
+      - name: Run Job Bot
         env:
           POST_URL: ${{ github.event.inputs.post_url || github.event.client_payload.post_url }}
+
           GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+
           GEMINI_MODEL_NAME: "gemini-3.6-flash"
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bg_auto_job_bot.py
 
-      - name: Video/output files upload karo (backup ke liye)
+        run: |
+          python bg_auto_job_bot.py
+
+      - name: Upload bot outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
