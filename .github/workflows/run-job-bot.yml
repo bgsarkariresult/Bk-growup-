@@ -1,0 +1,58 @@
+name: Run Job Bot
+
+# Option 1: GitHub ke Actions tab se manually chalane ke liye (post_url daal ke "Run workflow" dabao)
+# Option 2: Telegram bot workflow isko repository_dispatch se automatically trigger karta hai
+on:
+  workflow_dispatch:
+    inputs:
+      post_url:
+        description: "Blogger Post URL (jaise: https://.../rrc-nr-pet-result-....html)"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [run_job_bot]
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Repo checkout karo
+        uses: actions/checkout@v4
+
+      - name: Python setup karo
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: ffmpeg install karo
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Python packages install karo
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: YouTube credentials wapas banao (secrets se)
+        run: |
+          echo "${{ secrets.YOUTUBE_CLIENT_SECRET_B64 }}" | base64 -d > client_secrets.json
+          echo "${{ secrets.YOUTUBE_TOKEN_B64 }}" | base64 -d > token.json
+
+      - name: Bot chalao
+        env:
+          POST_URL: ${{ github.event.inputs.post_url || github.event.client_payload.post_url }}
+          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          GEMINI_MODEL_NAME: "gemini-3.6-flash"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bg_auto_job_bot.py
+
+      - name: Video/output files upload karo (backup ke liye)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-outputs
+          path: bot_outputs/
+          retention-days: 7
