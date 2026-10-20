@@ -464,21 +464,42 @@ def split_script_into_chunks(script, max_chars=MAX_CHUNK_CHARACTERS):
 # ==========================================
 # 6. OpenAI.fm Direct API + Edge TTS Fallback (FIXED)
 # ==========================================
+# OpenAI.fm 429 (Too Many Requests) se bachne ke settings
+FABLE_CHUNK_GAP_SECONDS = 4              # do chunks ke beech itna gap
+FABLE_BACKOFF_SECONDS = [10, 25, 45]     # 429 aane par attempt 1/2/3 ke baad itna ruko (Retry-After ho to wo bhi dekha jata hai)
+FABLE_BLOCKED = False                    # is run me OpenAI.fm fail/rate-limit hua to baaki awaazein seedhe Edge TTS se banengi
+
+
+class OpenAIFmRateLimited(Exception):
+    """OpenAI.fm ne 429 (Too Many Requests) diya."""
+    def __init__(self, retry_after=None):
+        super().__init__("OpenAI.fm 429 rate limit")
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(response):
+    try:
+        return int(float(response.headers.get("Retry-After", "")))
+    except (TypeError, ValueError):
+        return None
+
+
 def generate_fable_voice_openai_fm(text_chunk, output_path):
     """
     Direct call to openai.fm/api/generate — reliable full audio download.
     Playwright network interception was capturing only partial chunks.
+    429 aane par OpenAIFmRateLimited raise karta hai (caller ruk kar dobara try karta hai).
     """
     try:
         url = "https://www.openai.fm/api/generate"
-        
+
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
             "Origin": "https://www.openai.fm",
             "Referer": "https://www.openai.fm/",
             "Accept": "*/*",
         }
-        
+
         # Primary: POST with form-data
         files = {
             "input": (None, text_chunk),
@@ -486,9 +507,12 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
             "prompt": (None, "Speak clearly in a natural, friendly Indian Hindi male tone. Moderate pace, clear pronunciation."),
             "vibe": (None, "audio")
         }
-        
+
         response = requests.post(url, files=files, headers=headers, timeout=90, stream=True)
-        
+        if response.status_code == 429:
+            # GET se dobara try karne par rate limit aur badhta hai, isliye seedha ruk kar retry
+            raise OpenAIFmRateLimited(_retry_after_seconds(response))
+
         # Fallback to GET if POST fails
         if response.status_code != 200:
             params = {
@@ -497,26 +521,30 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
                 "prompt": "Speak clearly in a natural, friendly Indian Hindi male tone. Moderate pace, clear pronunciation."
             }
             response = requests.get(url, params=params, headers=headers, timeout=90, stream=True)
-        
+            if response.status_code == 429:
+                raise OpenAIFmRateLimited(_retry_after_seconds(response))
+
         response.raise_for_status()
-        
+
         content_type = response.headers.get("content-type", "").lower()
         if "audio" not in content_type and "mpeg" not in content_type and "wav" not in content_type and "octet-stream" not in content_type:
             raise Exception(f"Unexpected content-type: {content_type}")
-        
+
         # Write complete response body
         with open(output_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
-        
+
         # Validate size (very small files are incomplete)
         file_size = os.path.getsize(output_path)
         if file_size < 8000:  # roughly less than 0.5 second of speech
             raise Exception(f"Downloaded audio too small ({file_size} bytes) — incomplete response")
-        
+
         return True
-        
+
+    except OpenAIFmRateLimited:
+        raise
     except Exception as e:
         print(f"⚠️ OpenAI.fm Direct API Error: {e}")
         return False
@@ -535,6 +563,49 @@ def generate_edge_tts_voice(text, output_audio_path):
     loop.close()
 
 
+def _synthesize_chunks(chunks, temp_dir, use_fable):
+    """Saare chunks ki awaaz banata hai aur part files ki list lautata hai.
+    use_fable=True: OpenAI.fm (429 par ruk-ruk kar retry). Koi bhi chunk fail ho to None lautata hai,
+    taaki caller poori awaaz Edge TTS se dobara bana sake (video ke beech me awaaz nahi badalni chahiye).
+    use_fable=False: Edge TTS. Fail hone par None."""
+    parts = []
+    for idx, chunk in enumerate(chunks, start=1):
+        part_filename = os.path.join(temp_dir, f"part_{idx:03d}.mp3")
+
+        if use_fable:
+            if idx > 1:
+                time.sleep(FABLE_CHUNK_GAP_SECONDS)  # lagatar requests se 429 na aaye
+            ok = False
+            for attempt in range(1, MAX_RETRIES + 1):
+                print(f"🎙️ Generating Part {idx}/{len(chunks)} ({len(chunk)} chars) with OpenAI.fm (Fable Voice) - Attempt {attempt}...")
+                try:
+                    if generate_fable_voice_openai_fm(chunk, part_filename) and os.path.getsize(part_filename) >= 8000:
+                        ok = True
+                        break
+                    print(f"⚠️ Part {idx} audio adhoora/chhota mila. Retrying...")
+                    time.sleep(2)
+                except OpenAIFmRateLimited as e:
+                    if attempt < MAX_RETRIES:
+                        wait = min(max(e.retry_after or 0, FABLE_BACKOFF_SECONDS[min(attempt - 1, len(FABLE_BACKOFF_SECONDS) - 1)]), 90)
+                        print(f"⏳ OpenAI.fm rate limit (429) — {wait}s ruk kar dobara try karte hain...")
+                        time.sleep(wait)
+                    else:
+                        print("⚠️ OpenAI.fm rate limit (429) abhi bhi aa raha hai.")
+            if not ok:
+                print("⚠️ OpenAI.fm voice generation failed. Falling back to Edge TTS (hi-IN-MadhurNeural) for the whole audio.")
+                return None
+        else:
+            try:
+                print(f"🔊 Generating Part {idx}/{len(chunks)} via Edge TTS...")
+                generate_edge_tts_voice(chunk, part_filename)
+            except Exception as e:
+                print(f"❌ Part {idx} generation completely failed: {e}")
+                return None
+
+        parts.append(part_filename)
+    return parts
+
+
 def generate_male_voice_with_ffmpeg(text, output_audio_path):
     print("🎙️ Generating Natural Hindi Voiceover...")
     temp_dir = "temp_voice"
@@ -543,40 +614,18 @@ def generate_male_voice_with_ffmpeg(text, output_audio_path):
     chunks = split_script_into_chunks(text, max_chars=MAX_CHUNK_CHARACTERS)
     print(f"🧩 Script split into {len(chunks)} part(s) [Limit: {MAX_CHUNK_CHARACTERS} chars/part].")
    
-    audio_parts = []
-    fable_failed = False
-    
-    for idx, chunk in enumerate(chunks, start=1):
-        part_filename = os.path.join(temp_dir, f"part_{idx:03d}.mp3")
-        success = False
-       
-        if not fable_failed:
-            for attempt in range(1, MAX_RETRIES + 1):
-                print(f"🎙️ Generating Part {idx}/{len(chunks)} ({len(chunk)} chars) with OpenAI.fm (Fable Voice) - Attempt {attempt}...")
-                if generate_fable_voice_openai_fm(chunk, part_filename):
-                    # Extra size check
-                    if os.path.getsize(part_filename) >= 8000:
-                        success = True
-                        break
-                    else:
-                        print(f"⚠️ Part {idx} file too small after download. Retrying...")
-                time.sleep(2)
-           
-            if not success:
-                print("⚠️ OpenAI.fm voice generation failed. Falling back to Edge TTS (hi-IN-MadhurNeural).")
-                fable_failed = True
-        
-        if fable_failed or not success:
-            try:
-                print(f"🔊 Generating Part {idx}/{len(chunks)} via Edge TTS Fallback...")
-                generate_edge_tts_voice(chunk, part_filename)
-                success = True
-            except Exception as e:
-                print(f"❌ Part {idx} generation completely failed: {e}")
-                return False
-        
-        audio_parts.append(part_filename)
-    
+    global FABLE_BLOCKED
+    audio_parts = None
+    if not FABLE_BLOCKED:
+        audio_parts = _synthesize_chunks(chunks, temp_dir, use_fable=True)
+        if audio_parts is None:
+            FABLE_BLOCKED = True
+            send_telegram("⚠️ OpenAI.fm (Fable) awaaz nahi bana paaya (rate limit/error). Poori awaaz Edge TTS (hi-IN-MadhurNeural) se ban rahi hai.")
+    if audio_parts is None:
+        audio_parts = _synthesize_chunks(chunks, temp_dir, use_fable=False)
+    if not audio_parts:
+        return False
+
     if audio_parts:
         print("🔗 Concatenating and Merging All Audio Parts sequentially...")
         list_file = os.path.join(temp_dir, "concat_list.txt")
