@@ -5,6 +5,7 @@ import time
 import asyncio
 import requests
 import subprocess
+import textwrap
 from bs4 import BeautifulSoup
 from g4f.client import Client
 import edge_tts
@@ -34,6 +35,22 @@ client = Client()
 SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
 MAX_CHUNK_CHARACTERS = 1000
 MAX_RETRIES = 3
+
+# ==========================================
+# CTA (Call To Action) — Form fill service
+# Number badalna ho to yaha CTA_NUMBER badlo (ya GitHub me CTA_WHATSAPP_NUMBER env var do)
+# ==========================================
+CTA_NUMBER = os.environ.get("CTA_WHATSAPP_NUMBER", "").strip() or "9399655537"
+# Awaaz me bolne wali line (number nahi bolte — TTS ank galat bolta hai, number screen par dikhta hai)
+CTA_SPOKEN = "अगर ये फॉर्म आपको भरवाना है, तो स्क्रीन पर दिख रहे व्हाट्सऐप नंबर पर मैसेज कर दीजिए, हम आपका फॉर्म भर देंगे।"
+CTA_BAR_TEXT = "फॉर्म भरवाने के लिए WhatsApp करें"
+CTA_DESCRIPTION = f"📲 फॉर्म भरवाने के लिए WhatsApp करें: {CTA_NUMBER}"
+
+LONG_VIDEO_MAX_SECONDS = 300   # pehle 240 tha — script lambi ho to aakhri CTA kat na jaye
+LONG_CTA_SECONDS = 10          # lambi video me aakhri itne second CTA patti dikhegi
+SHORTS_MAX_SECONDS = 59        # Shorts hamesha 1 minute se kam
+SHORTS_CTA_SECONDS = 8         # Shorts me aakhri itne second CTA patti dikhegi
+SHORTS_MAX_WORDS = 60          # CTA se pehle ki script — kul awaaz 25-35 second rahegi
 
 
 def get_youtube_service():
@@ -282,6 +299,9 @@ def generate_youtube_assets(title, content, max_retries=3):
     4. SCRIPT LENGTH & WORD COUNT: The script MUST be 500 to 650 words long to guarantee a video length of 3 to 4 minutes when spoken.
     5. PARAGRAPHS: Write the script broken down into clear, readable paragraphs (3 to 5 sentences per paragraph).
     6. TITLES: Create 3 high-CTR, viral, clickbait Hindi/Hinglish titles with emojis. Do NOT include site header names like 'BG_ALL_GOVT_JOB' in titles.
+    7. SHORTS SCRIPT: Also write a separate YouTube Shorts script of 45 to 55 words ONLY (about 18-20 seconds when spoken). Start with a shocking one-line hook, give only the most important facts (post name, key date/seats/last date), single paragraph, no greeting, NO goodbye line and NO phone/WhatsApp/contact line (the closing call-to-action is added automatically).
+    8. SHORTS TITLE: One viral Hindi/Hinglish title with emojis, max 70 characters, and it MUST end with #Shorts.
+    9. Do NOT write any phone number / WhatsApp / contact call-to-action at the end of the long video_script either; it is added automatically.
 
     OUTPUT FORMAT (Strictly valid raw JSON without markdown formatting):
     {{
@@ -289,7 +309,9 @@ def generate_youtube_assets(title, content, max_retries=3):
       "video_script": "Full simple Hindi script in PARAGRAPHS...",
       "seo_description": "SEO description with emojis...",
       "tags": ["tag1", "tag2", "tag3"],
-      "hashtags": "#hashtag1 #hashtag2 #hashtag3"
+      "hashtags": "#hashtag1 #hashtag2 #hashtag3",
+      "shorts_title": "Viral title with emojis #Shorts",
+      "shorts_script": "45-55 word single-paragraph Hindi shorts script"
     }}
     """
 
@@ -364,6 +386,38 @@ def generate_youtube_assets(title, content, max_retries=3):
            
     print("❌ AI Generation Error: Both Gemini API and g4f Library failed.")
     return None
+
+# ==========================================
+# 4b. Shorts Script Builder (25-35 sec target)
+# ==========================================
+def trim_to_words(text, max_words):
+    """Text ko max_words tak chhota karta hai; koshish karta hai ki vaakya poora ho (।!? par ruke)."""
+    text = ' '.join(str(text).split())
+    words = text.split(' ')
+    if len(words) <= max_words:
+        return text
+    cut = ' '.join(words[:max_words])
+    last_end = max(cut.rfind('।'), cut.rfind('!'), cut.rfind('?'), cut.rfind('.'))
+    if last_end > len(cut) * 0.5:
+        return cut[:last_end + 1]
+    return cut.rstrip(',') + '।'
+
+
+def build_shorts_assets(ai_data, selected_title, long_script):
+    """Shorts ka title + script (end me CTA ke saath) banata hai."""
+    raw = (ai_data.get("shorts_script") or "").strip()
+    if not raw:
+        # Gemini/g4f ne shorts script nahi di -> lambi script ka shuruaati hissa use karo
+        print("⚠️ shorts_script nahi mili, lambi script ke shuruaati hisse se Shorts ban rahi hai.")
+        raw = long_script
+    body = trim_to_words(raw, SHORTS_MAX_WORDS)
+    shorts_script = f"{body} {CTA_SPOKEN}"
+
+    shorts_title = (ai_data.get("shorts_title") or selected_title).strip()
+    if "#shorts" not in shorts_title.lower():
+        shorts_title = f"{shorts_title[:88]} #Shorts"
+    return shorts_title[:98], shorts_script
+
 
 # ==========================================
 # 5. Smart Script Splitter (Strict 1000 Chars Limit)
@@ -559,11 +613,11 @@ def generate_male_voice_with_ffmpeg(text, output_audio_path):
 # ==========================================
 # 7. Video Compression & Assembly
 # ==========================================
-def ensure_1080p_ffmpeg(input_path, output_path):
+def ensure_1080p_ffmpeg(input_path, output_path, width=1920, height=1080):
     try:
         cmd = [
             'ffmpeg', '-i', input_path,
-            '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
+            '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2',
             '-c:v', 'libx264', '-c:a', 'aac', '-b:a', '128k', '-preset', 'fast', '-y', output_path
         ]
         subprocess.run(cmd, capture_output=True, check=True)
@@ -572,18 +626,18 @@ def ensure_1080p_ffmpeg(input_path, output_path):
         return input_path
 
 
-def compress_video_with_ffmpeg(input_path, output_path, target_size_mb=95):
+def compress_video_with_ffmpeg(input_path, output_path, target_size_mb=95, width=1920, height=1080):
     current_size = os.path.getsize(input_path) / (1024 * 1024)
     if current_size <= target_size_mb:
         print(f"✅ Video size optimal: {current_size:.1f}MB")
-        return ensure_1080p_ffmpeg(input_path, output_path)
-   
+        return ensure_1080p_ffmpeg(input_path, output_path, width, height)
+
     print(f"📦 Compressing Video from {current_size:.1f}MB...")
     temp_output = output_path.replace('.mp4', '_temp_compress.mp4')
-   
+
     cmd = [
         'ffmpeg', '-i', input_path,
-        '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',
+        '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2',
         '-c:v', 'libx264', '-b:v', '1200k', '-maxrate', '2000k', '-bufsize', '4000k',
         '-c:a', 'aac', '-b:a', '96k', '-r', '24', '-preset', 'fast', '-y', temp_output
     ]
@@ -595,30 +649,60 @@ def compress_video_with_ffmpeg(input_path, output_path, target_size_mb=95):
         return output_path
     except Exception as e:
         print(f"⚠️ Compression failed, fallback to 1080p ensure: {e}")
-        return ensure_1080p_ffmpeg(input_path, output_path)
+        return ensure_1080p_ffmpeg(input_path, output_path, width, height)
 
 
-def record_website_video(url, output_clip_path, target_duration):
-    print(f"📹 Auto-Recording Website for {target_duration:.1f}s...")
+def record_website_video(url, output_clip_path, target_duration, shorts=False):
+    """Website ki screen record karta hai.
+    shorts=False -> 1920x1080 (lambi video), shorts=True -> 1080x1920 vertical (Shorts).
+    Aakhri kuch second me neeche WhatsApp CTA patti dikhti hai."""
+    mode = "Shorts 9:16" if shorts else "Long 16:9"
+    print(f"📹 Auto-Recording Website for {target_duration:.1f}s ({mode})...")
     temp_dir = "temp_rec"
     os.makedirs(temp_dir, exist_ok=True)
     keywords = ["Result", "Admit Card", "Vacancy", "Apply", "Notification", "Download", "Eligibility"]
-   
+
+    if shorts:
+        # 540x960 par record hota hai (mobile jaisa layout); Playwright video ko scale nahi karta,
+        # isliye 1080x1920 me bada karna create_video_with_ffmpeg me hota hai
+        view_w, view_h, out_w, out_h, dsf = 540, 960, 540, 960, 1
+        zoom, scroll_step = 1.2, 3.0
+        cta_seconds, cta_scale, cta_bottom = SHORTS_CTA_SECONDS, 1.0, "18%"  # neeche Shorts ke buttons/title se bachne ke liye thoda upar
+    else:
+        view_w, view_h, out_w, out_h, dsf = 1920, 1080, 1920, 1080, 1
+        zoom, scroll_step = 1.4, 1.5
+        cta_seconds, cta_scale, cta_bottom = LONG_CTA_SECONDS, 1.6, "0"
+
+    cta_js = """
+    ([text, number, scale, bottom]) => {
+        if (document.getElementById('bk-cta-bar')) return;
+        const d = document.createElement('div');
+        d.id = 'bk-cta-bar';
+        d.style.cssText = 'position:fixed;left:0;right:0;bottom:' + bottom + ';z-index:2147483647;text-align:center;' +
+            'background:linear-gradient(90deg,#15803d,#16a34a);color:#fff;box-shadow:0 -6px 20px rgba(0,0,0,.45);' +
+            'font-family:"Noto Sans Devanagari","Noto Sans",Arial,sans-serif;padding:' + (14 * scale) + 'px 8px;';
+        d.innerHTML = '<div style="font-size:' + (24 * scale) + 'px;font-weight:700;">📲 ' + text + '</div>' +
+            '<div style="font-size:' + (42 * scale) + 'px;font-weight:900;letter-spacing:2px;margin-top:4px;">' + number + '</div>';
+        document.documentElement.appendChild(d);
+    }
+    """
+
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
+                viewport={'width': view_w, 'height': view_h}, device_scale_factor=dsf,
                 record_video_dir=temp_dir,
-                record_video_size={'width': 1920, 'height': 1080}
+                record_video_size={'width': out_w, 'height': out_h}
             )
-           
+
             page = context.new_page()
+            rec_start = time.time()  # recording isi pal se shuru hoti hai
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             time.sleep(3)
-            page.evaluate("document.body.style.zoom = '1.4'")
+            page.evaluate(f"document.body.style.zoom = '{zoom}'")
             time.sleep(1)
-           
+
             js_code = """
             (keywords) => {
                 keywords.forEach(kw => {
@@ -637,19 +721,27 @@ def record_website_video(url, output_clip_path, target_duration):
             """
             page.evaluate(js_code, keywords)
             time.sleep(1)
-           
+
             start_time = time.time()
-            max_duration = min(target_duration, 240)
-           
+            max_duration = target_duration
+
+            # Final video clip ke pehle `target_duration` second hi lete hain (rec_start se),
+            # isliye CTA usi ghadi ke hisab se aakhri cta_seconds me dikhana hai.
+            cta_at = max(0.0, target_duration - cta_seconds - 0.5)
+            cta_shown = False
+
             page_height = page.evaluate("document.body.scrollHeight")
             viewport_height = page.evaluate("window.innerHeight")
             total_scroll = max(0, page_height - viewport_height)
-           
-            scroll_step = 1.5
+
             current_scroll = 0
             direction = 1
-           
+
             while time.time() - start_time < max_duration:
+                if not cta_shown and time.time() - rec_start >= cta_at:
+                    page.evaluate(cta_js, [CTA_BAR_TEXT, CTA_NUMBER, cta_scale, cta_bottom])
+                    cta_shown = True
+
                 current_scroll += scroll_step * direction
                 if current_scroll > total_scroll:
                     current_scroll = total_scroll
@@ -657,20 +749,20 @@ def record_website_video(url, output_clip_path, target_duration):
                 elif current_scroll < 0:
                     current_scroll = 0
                     direction = 1
-               
+
                 page.evaluate(f"window.scrollTo(0, {current_scroll})")
                 time.sleep(0.04)
             rec_path = page.video.path()
             context.close()
             browser.close()
-           
+
             if os.path.exists(rec_path):
                 if os.path.exists(output_clip_path):
                     os.remove(output_clip_path)
                 os.rename(rec_path, output_clip_path)
                 print(f"✅ Website Recording Saved!")
                 return True
-               
+
     except Exception as e:
         print(f"⚠️ Screen Recording Warning: {e}")
         return False
@@ -730,56 +822,75 @@ def get_audio_duration_robust(audio_path):
     return 60.0  # Safe Default
 
 
-def create_video_with_ffmpeg(audio_path, post_url, video_title, output_video_path):
-    print("🎬 Assembling 1080p HD Video...")
+def _load_font(size):
+    for name in ("DejaVuSans-Bold.ttf", "NotoSansDevanagari-Bold.ttf", "arial.ttf"):
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def create_video_with_ffmpeg(audio_path, post_url, video_title, output_video_path, shorts=False):
+    """shorts=False -> 1920x1080 lambi video, shorts=True -> 1080x1920 vertical Shorts."""
+    width, height = (1080, 1920) if shorts else (1920, 1080)
+    max_seconds = SHORTS_MAX_SECONDS if shorts else LONG_VIDEO_MAX_SECONDS
+    print(f"🎬 Assembling {'Shorts 1080x1920' if shorts else '1080p HD'} Video...")
     temp_img_path = "temp_frame_1080p.png"
     web_clip_path = "temp_website_clip.mp4"
     temp_video_path = output_video_path.replace('.mp4', '_temp.mp4')
-   
+
     try:
         # ⚡ 4-Layer Robust Duration Fetch
         exact_duration = get_audio_duration_robust(audio_path)
-        duration = min(exact_duration, 240)
+        duration = min(exact_duration, max_seconds)
         print(f"⏱️ Calculated Exact Audio Duration: {duration:.2f} seconds")
-        
+        if shorts and not (25 <= exact_duration <= 35):
+            print(f"⚠️ Shorts ki awaaz {exact_duration:.1f}s hai (target 25-35s).")
+
         audio = AudioFileClip(audio_path)
-        record_success = record_website_video(post_url, web_clip_path, duration)
-       
+        record_success = record_website_video(post_url, web_clip_path, duration, shorts=shorts)
+
         if record_success and os.path.exists(web_clip_path):
             bg_video = VideoFileClip(web_clip_path)
-            if bg_video.size != (1920, 1080):
-                bg_video = bg_video.resize(newsize=(1920, 1080))
-           
+            if bg_video.size != (width, height):
+                bg_video = bg_video.resize(newsize=(width, height))
+
             bg_video = bg_video.loop(duration=duration) if bg_video.duration < duration else bg_video.subclip(0, duration)
             final_video = bg_video.set_audio(audio)
         else:
-            img = Image.new('RGB', (1920, 1080), color=(15, 23, 42))
+            img = Image.new('RGB', (width, height), color=(15, 23, 42))
             draw = ImageDraw.Draw(img)
-            draw.rectangle([(60, 50), (1860, 1030)], outline=(234, 179, 8), width=5)
-           
-            try:
-                font = ImageFont.truetype("arial.ttf", 40)
-            except:
-                font = ImageFont.load_default()
-           
-            draw.text((140, 150), "📢 BK GROWUP - GOVT JOB UPDATE", fill=(234, 179, 8), font=font)
-            clean_display_title = video_title[:55] + "..." if len(video_title) > 55 else video_title
-            draw.text((140, 250), clean_display_title, fill=(255, 255, 255), font=font)
-            draw.text((140, 350), "🔗 Apply Link In Description", fill=(100, 200, 255), font=font)
-           
+            draw.rectangle([(60, 50), (width - 60, height - 50)], outline=(234, 179, 8), width=5)
+
+            x = 90 if shorts else 140
+            y0 = 400 if shorts else 150
+            title_font = _load_font(40)
+            cta_font = _load_font(48 if shorts else 56)
+            number_font = _load_font(80 if shorts else 96)
+
+            draw.text((x, y0), "BK GROWUP - GOVT JOB UPDATE", fill=(234, 179, 8), font=title_font)
+            wrapped_title = textwrap.fill(video_title[:90], width=26 if shorts else 55)
+            draw.multiline_text((x, y0 + 100), wrapped_title, fill=(255, 255, 255), font=title_font, spacing=12)
+            draw.text((x, y0 + 500), "FORM BHARWANE KE LIYE\nWHATSAPP KARE:", fill=(134, 239, 172), font=cta_font)
+            draw.text((x, y0 + 650), CTA_NUMBER, fill=(255, 255, 255), font=number_font)
+
             img.save(temp_img_path)
             final_video = ImageClip(temp_img_path).set_duration(duration).set_audio(audio)
-       
+
         final_video.write_videofile(temp_video_path, fps=24, codec='libx264', audio_codec='aac', verbose=False, logger=None)
-       
+
         final_video.close()
         audio.close()
         if 'bg_video' in locals():
             bg_video.close()
-       
-        compressed_path = compress_video_with_ffmpeg(temp_video_path, output_video_path)
+
+        compressed_path = compress_video_with_ffmpeg(temp_video_path, output_video_path, width=width, height=height)
         return True
-       
+
     except Exception as e:
         print(f"❌ Video Assembly Error: {e}")
         return False
@@ -844,6 +955,28 @@ def get_post_url():
 # ==========================================
 # 9. Main Workflow
 # ==========================================
+def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags, audio_file, video_file):
+    """Shorts: awaaz -> vertical video -> YouTube upload.
+    Yaha kuch fail ho to sirf Shorts skip hoti hai, lambi video par asar nahi padta."""
+    try:
+        print("=" * 50)
+        print("🎞️ Shorts banana shuru...")
+        print("=" * 50)
+        if not generate_male_voice_with_ffmpeg(shorts_script, audio_file) or not os.path.exists(audio_file):
+            send_telegram(f"❌ Shorts ki voice generation fail ho gayi, Shorts skip:\n{post_url}")
+            return
+        if not create_video_with_ffmpeg(audio_file, post_url, shorts_title, video_file, shorts=True) or not os.path.exists(video_file):
+            send_telegram(f"❌ Shorts video assembly fail ho gaya, upload skip:\n{post_url}")
+            return
+        yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags)
+        if yt_url:
+            send_telegram(f"✅ Shorts upload ho gayi!\n{shorts_title}\n{yt_url}")
+        else:
+            send_telegram(f"❌ Shorts ban gayi lekin YouTube upload fail ho gaya:\n{shorts_title}")
+    except Exception as e:
+        send_telegram(f"❌ Shorts me error aaya (lambi video par asar nahi):\n{e}")
+
+
 def main():
     print("=" * 50)
     print("🚀 BK GrowUp Auto Job Bot + Safe YouTube Uploader")
@@ -867,28 +1000,41 @@ def main():
             if ai_data:
                 output_dir = "bot_outputs"
                 os.makedirs(output_dir, exist_ok=True)
-               
+
                 clean_name_raw = re.sub(r'[^\w\s-]', '', blog_title)
                 filtered_words = [
                     w for w in clean_name_raw.split()
                     if w.lower() not in ['bg_all_govt_job', 'bg', 'all', 'govt', 'job', 'bk', 'growup', 'http', 'https']
                 ]
-               
+
                 if filtered_words:
                     filename_base = "_".join(filtered_words[:5])
                 else:
                     filename_base = f"Job_Notification_{int(time.time())}"
-                
+
                 txt_file = os.path.join(output_dir, f"{filename_base}_package.txt")
                 audio_file = os.path.join(output_dir, f"{filename_base}_audio.mp3")
                 video_file = os.path.join(output_dir, f"{filename_base}_video.mp4")
-               
+                shorts_audio_file = os.path.join(output_dir, f"{filename_base}_shorts_audio.mp3")
+                shorts_video_file = os.path.join(output_dir, f"{filename_base}_shorts_video.mp4")
+
                 titles = ai_data.get("seo_title", [])
                 selected_title = titles[0] if isinstance(titles, list) and titles else blog_title
-                seo_desc = f"{ai_data.get('seo_description', '')}\n\n{ai_data.get('hashtags', '')}"
+                base_desc = f"{ai_data.get('seo_description', '')}\n\n{ai_data.get('hashtags', '')}"
                 tags = ai_data.get('tags', [])
-                script = ai_data.get('video_script', '')
-               
+                if not isinstance(tags, list):
+                    tags = [t.strip() for t in str(tags).split(',') if t.strip()]
+                raw_script = ai_data.get('video_script', '')
+
+                # Lambi video: script ke end me CTA, description ki pehli line me CTA
+                script = f"{raw_script.strip()}\n\n{CTA_SPOKEN}"
+                seo_desc = f"{CTA_DESCRIPTION}\n\n{base_desc}"
+
+                # Shorts: alag chhoti script (25-35 sec) + CTA
+                shorts_title, shorts_script = build_shorts_assets(ai_data, selected_title, raw_script)
+                shorts_desc = f"{CTA_DESCRIPTION}\n\n{base_desc}\n\n#Shorts\n🔗 पूरी जानकारी: {post_url}"
+                shorts_tags = list(tags) + ["shorts", "Shorts"]
+
                 with open(txt_file, "w", encoding="utf-8") as f:
                     f.write(f"SELECTED TITLE: {selected_title}\n\n")
                     f.write("--- SCRIPT ---\n")
@@ -896,17 +1042,21 @@ def main():
                     f.write("--- SEO DESCRIPTION ---\n")
                     f.write(f"{seo_desc}\n\n")
                     f.write("--- TAGS ---\n")
-                    f.write(f"{', '.join(tags)}\n")
-               
+                    f.write(f"{', '.join(tags)}\n\n")
+                    f.write("--- SHORTS TITLE ---\n")
+                    f.write(f"{shorts_title}\n\n")
+                    f.write("--- SHORTS SCRIPT ---\n")
+                    f.write(f"{shorts_script}\n")
+
                 print(f"📄 Assets package saved at: {txt_file}")
-                
+
                 # 1. Voiceover Generation
                 voice_success = generate_male_voice_with_ffmpeg(script, audio_file)
-               
+
                 # 2. Video Assembly
                 if voice_success and os.path.exists(audio_file):
                     video_success = create_video_with_ffmpeg(audio_file, post_url, selected_title, video_file)
-                   
+
                     # 3. YouTube Uploading
                     if video_success and os.path.exists(video_file):
                         yt_url = upload_to_youtube(video_file, selected_title, seo_desc, tags)
@@ -918,6 +1068,10 @@ def main():
                         send_telegram(f"❌ Video assembly fail ho gaya, upload skip:\n{post_url}")
                 else:
                     send_telegram(f"❌ Voice generation fail ho gaya, video/upload skip:\n{post_url}")
+
+                # 4. Shorts (lambi video ka result kuch bhi ho, Shorts alag se try hoti hai)
+                run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags,
+                                    shorts_audio_file, shorts_video_file)
     else:
         send_telegram("❌ Koi URL nahi mila (POST_URL env var ya input khali tha).")
 
