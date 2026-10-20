@@ -37,7 +37,7 @@ MAX_CHUNK_CHARACTERS = 1000
 MAX_RETRIES = 3
 
 # ==========================================
-# CTA (Call To Action) — Form fill service
+# CTA (Call To Action) — Form fill service (sirf Apply/Vacancy posts par)
 # Number badalna ho to yaha CTA_NUMBER badlo (ya GitHub me CTA_WHATSAPP_NUMBER env var do)
 # ==========================================
 CTA_NUMBER = os.environ.get("CTA_WHATSAPP_NUMBER", "").strip() or "9399655537"
@@ -52,6 +52,8 @@ SHORTS_MAX_SECONDS = 59        # Shorts hamesha 1 minute se kam
 SHORTS_CTA_SECONDS = 7         # Shorts me aakhri itne second CTA patti dikhegi
 SHORTS_VOICE_SPEED = 1.5       # Shorts ki awaaz itni guna tez (1.0 = normal)
 SHORTS_MAX_WORDS = 100         # CTA se pehle ki script; 1.5x speed par kul awaaz ~25-35 second rahegi
+SHORTS_MAX_WORDS_NO_CTA = 120  # jab CTA nahi hota (Result/Admit Card) tab script thodi lambi, taaki awaaz 25-35 sec rahe
+CTA_CONTENT_TYPES = ('vacancy',)  # WhatsApp CTA sirf Apply/Vacancy post par — Result/Admit Card par nahi
 
 
 def get_youtube_service():
@@ -276,6 +278,7 @@ def generate_youtube_assets(title, content, max_retries=3):
     print("🤖 Generating High-CTR Title, Dynamic Clickbait Script & SEO Assets...")
     content_type = detect_content_type(title, content)
     print(f"📊 Detected Content Type: {content_type.upper()}")
+    shorts_words = "85 to 95" if content_type in CTA_CONTENT_TYPES else "105 to 115"  # CTA jodne par ~22 shabd aur jud jaate hain
    
     type_prompts = {
         'result': "CRITICAL: RESULT ANNOUNCEMENT - Focus on urgency, shock, cut-off shock, and direct score check.",
@@ -300,7 +303,7 @@ def generate_youtube_assets(title, content, max_retries=3):
     4. SCRIPT LENGTH & WORD COUNT: The script MUST be 500 to 650 words long to guarantee a video length of 3 to 4 minutes when spoken.
     5. PARAGRAPHS: Write the script broken down into clear, readable paragraphs (3 to 5 sentences per paragraph).
     6. TITLES: Create 3 high-CTR, viral, clickbait Hindi/Hinglish titles with emojis. Do NOT include site header names like 'BG_ALL_GOVT_JOB' in titles.
-    7. SHORTS SCRIPT: Also write a separate YouTube Shorts script of 85 to 95 words ONLY (about 30 seconds when spoken after the audio is sped up 1.5x). Start with a shocking one-line hook, give only the most important facts (post name, key date/seats/last date), single paragraph, no greeting, NO goodbye line and NO phone/WhatsApp/contact line (the closing call-to-action is added automatically).
+    7. SHORTS SCRIPT: Also write a separate YouTube Shorts script of {shorts_words} words ONLY (about 30 seconds when spoken after the audio is sped up 1.5x). Start with a shocking one-line hook, give only the most important facts (post name, key date/seats/last date), single paragraph, no greeting, NO goodbye line and NO phone/WhatsApp/contact line (the closing call-to-action is added automatically).
     8. SHORTS TITLE: One viral Hindi/Hinglish title with emojis, max 70 characters, and it MUST end with #Shorts.
     9. Do NOT write any phone number / WhatsApp / contact call-to-action at the end of the long video_script either; it is added automatically.
 
@@ -312,7 +315,7 @@ def generate_youtube_assets(title, content, max_retries=3):
       "tags": ["tag1", "tag2", "tag3"],
       "hashtags": "#hashtag1 #hashtag2 #hashtag3",
       "shorts_title": "Viral title with emojis #Shorts",
-      "shorts_script": "85-95 word single-paragraph Hindi shorts script"
+      "shorts_script": "{shorts_words} word single-paragraph Hindi shorts script"
     }}
     """
 
@@ -404,15 +407,15 @@ def trim_to_words(text, max_words):
     return cut.rstrip(',') + '।'
 
 
-def build_shorts_assets(ai_data, selected_title, long_script):
+def build_shorts_assets(ai_data, selected_title, long_script, with_cta=True):
     """Shorts ka title + script (end me CTA ke saath) banata hai."""
     raw = (ai_data.get("shorts_script") or "").strip()
     if not raw:
         # Gemini/g4f ne shorts script nahi di -> lambi script ka shuruaati hissa use karo
         print("⚠️ shorts_script nahi mili, lambi script ke shuruaati hisse se Shorts ban rahi hai.")
         raw = long_script
-    body = trim_to_words(raw, SHORTS_MAX_WORDS)
-    shorts_script = f"{body} {CTA_SPOKEN}"
+    body = trim_to_words(raw, SHORTS_MAX_WORDS if with_cta else SHORTS_MAX_WORDS_NO_CTA)
+    shorts_script = f"{body} {CTA_SPOKEN}" if with_cta else body
 
     shorts_title = (ai_data.get("shorts_title") or selected_title).strip()
     if "#shorts" not in shorts_title.lower():
@@ -653,7 +656,7 @@ def compress_video_with_ffmpeg(input_path, output_path, target_size_mb=95, width
         return ensure_1080p_ffmpeg(input_path, output_path, width, height)
 
 
-def record_website_video(url, output_clip_path, target_duration, shorts=False):
+def record_website_video(url, output_clip_path, target_duration, shorts=False, show_cta=True):
     """Website ki screen record karta hai.
     shorts=False -> 1920x1080 (lambi video), shorts=True -> 1080x1920 vertical (Shorts).
     Aakhri kuch second me neeche WhatsApp CTA patti dikhti hai."""
@@ -739,7 +742,7 @@ def record_website_video(url, output_clip_path, target_duration, shorts=False):
             direction = 1
 
             while time.time() - start_time < max_duration:
-                if not cta_shown and time.time() - rec_start >= cta_at:
+                if show_cta and not cta_shown and time.time() - rec_start >= cta_at:
                     page.evaluate(cta_js, [CTA_BAR_TEXT, CTA_NUMBER, cta_scale, cta_bottom])
                     cta_shown = True
 
@@ -835,7 +838,7 @@ def _load_font(size):
         return ImageFont.load_default()
 
 
-def create_video_with_ffmpeg(audio_path, post_url, video_title, output_video_path, shorts=False):
+def create_video_with_ffmpeg(audio_path, post_url, video_title, output_video_path, shorts=False, show_cta=True):
     """shorts=False -> 1920x1080 lambi video, shorts=True -> 1080x1920 vertical Shorts."""
     width, height = (1080, 1920) if shorts else (1920, 1080)
     max_seconds = SHORTS_MAX_SECONDS if shorts else LONG_VIDEO_MAX_SECONDS
@@ -853,7 +856,7 @@ def create_video_with_ffmpeg(audio_path, post_url, video_title, output_video_pat
             print(f"⚠️ Shorts ki awaaz {exact_duration:.1f}s hai (target 25-35s).")
 
         audio = AudioFileClip(audio_path)
-        record_success = record_website_video(post_url, web_clip_path, duration, shorts=shorts)
+        record_success = record_website_video(post_url, web_clip_path, duration, shorts=shorts, show_cta=show_cta)
 
         if record_success and os.path.exists(web_clip_path):
             bg_video = VideoFileClip(web_clip_path)
@@ -876,8 +879,9 @@ def create_video_with_ffmpeg(audio_path, post_url, video_title, output_video_pat
             draw.text((x, y0), "BK GROWUP - GOVT JOB UPDATE", fill=(234, 179, 8), font=title_font)
             wrapped_title = textwrap.fill(video_title[:90], width=26 if shorts else 55)
             draw.multiline_text((x, y0 + 100), wrapped_title, fill=(255, 255, 255), font=title_font, spacing=12)
-            draw.text((x, y0 + 500), "FORM BHARWANE KE LIYE\nWHATSAPP KARE:", fill=(134, 239, 172), font=cta_font)
-            draw.text((x, y0 + 650), CTA_NUMBER, fill=(255, 255, 255), font=number_font)
+            if show_cta:
+                draw.text((x, y0 + 500), "FORM BHARWANE KE LIYE\nWHATSAPP KARE:", fill=(134, 239, 172), font=cta_font)
+                draw.text((x, y0 + 650), CTA_NUMBER, fill=(255, 255, 255), font=number_font)
 
             img.save(temp_img_path)
             final_video = ImageClip(temp_img_path).set_duration(duration).set_audio(audio)
@@ -978,7 +982,7 @@ def speed_up_audio(audio_path, speed):
         return False
 
 
-def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags, audio_file, video_file):
+def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags, audio_file, video_file, show_cta=True):
     """Shorts: awaaz -> vertical video -> YouTube upload.
     Yaha kuch fail ho to sirf Shorts skip hoti hai, lambi video par asar nahi padta."""
     try:
@@ -989,7 +993,7 @@ def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shor
             send_telegram(f"❌ Shorts ki voice generation fail ho gayi, Shorts skip:\n{post_url}")
             return
         speed_up_audio(audio_file, SHORTS_VOICE_SPEED)
-        if not create_video_with_ffmpeg(audio_file, post_url, shorts_title, video_file, shorts=True) or not os.path.exists(video_file):
+        if not create_video_with_ffmpeg(audio_file, post_url, shorts_title, video_file, shorts=True, show_cta=show_cta) or not os.path.exists(video_file):
             send_telegram(f"❌ Shorts video assembly fail ho gaya, upload skip:\n{post_url}")
             return
         yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags)
@@ -1050,17 +1054,24 @@ def main():
                     tags = [t.strip() for t in str(tags).split(',') if t.strip()]
                 raw_script = ai_data.get('video_script', '')
 
-                # Lambi video: script ke end me CTA, description ki pehli line me CTA
-                script = f"{raw_script.strip()}\n\n{CTA_SPOKEN}"
-                seo_desc = f"{CTA_DESCRIPTION}\n\n{base_desc}"
+                # WhatsApp CTA sirf Apply/Vacancy post par — Result / Admit Card post par nahi
+                content_type = detect_content_type(blog_title, blog_content)
+                show_cta = content_type in CTA_CONTENT_TYPES
+                print(f"📊 Content type: {content_type.upper()} | WhatsApp CTA: {'HAAN' if show_cta else 'NAHI'}")
+                cta_desc_prefix = f"{CTA_DESCRIPTION}\n\n" if show_cta else ""
+
+                # Lambi video: (vacancy par) script ke end me CTA, description ki pehli line me CTA
+                script = f"{raw_script.strip()}\n\n{CTA_SPOKEN}" if show_cta else raw_script.strip()
+                seo_desc = f"{cta_desc_prefix}{base_desc}"
 
                 # Shorts: alag chhoti script (25-35 sec) + CTA
-                shorts_title, shorts_script = build_shorts_assets(ai_data, selected_title, raw_script)
-                shorts_desc = f"{CTA_DESCRIPTION}\n\n{base_desc}\n\n#Shorts\n🔗 पूरी जानकारी: {post_url}"
+                shorts_title, shorts_script = build_shorts_assets(ai_data, selected_title, raw_script, with_cta=show_cta)
+                shorts_desc = f"{cta_desc_prefix}{base_desc}\n\n#Shorts\n🔗 पूरी जानकारी: {post_url}"
                 shorts_tags = list(tags) + ["shorts", "Shorts"]
 
                 with open(txt_file, "w", encoding="utf-8") as f:
-                    f.write(f"SELECTED TITLE: {selected_title}\n\n")
+                    f.write(f"SELECTED TITLE: {selected_title}\n")
+                    f.write(f"CONTENT TYPE: {content_type.upper()} | WHATSAPP CTA: {'YES' if show_cta else 'NO'}\n\n")
                     f.write("--- SCRIPT ---\n")
                     f.write(f"{script}\n\n")
                     f.write("--- SEO DESCRIPTION ---\n")
@@ -1079,7 +1090,7 @@ def main():
 
                 # 2. Video Assembly
                 if voice_success and os.path.exists(audio_file):
-                    video_success = create_video_with_ffmpeg(audio_file, post_url, selected_title, video_file)
+                    video_success = create_video_with_ffmpeg(audio_file, post_url, selected_title, video_file, show_cta=show_cta)
 
                     # 3. YouTube Uploading
                     if video_success and os.path.exists(video_file):
@@ -1095,7 +1106,7 @@ def main():
 
                 # 4. Shorts (lambi video ka result kuch bhi ho, Shorts alag se try hoti hai)
                 run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags,
-                                    shorts_audio_file, shorts_video_file)
+                                    shorts_audio_file, shorts_video_file, show_cta=show_cta)
     else:
         send_telegram("❌ Koi URL nahi mila (POST_URL env var ya input khali tha).")
 
