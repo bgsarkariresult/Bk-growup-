@@ -49,8 +49,9 @@ CTA_DESCRIPTION = f"📲 फॉर्म भरवाने के लिए Wha
 LONG_VIDEO_MAX_SECONDS = 300   # pehle 240 tha — script lambi ho to aakhri CTA kat na jaye
 LONG_CTA_SECONDS = 10          # lambi video me aakhri itne second CTA patti dikhegi
 SHORTS_MAX_SECONDS = 59        # Shorts hamesha 1 minute se kam
-SHORTS_CTA_SECONDS = 8         # Shorts me aakhri itne second CTA patti dikhegi
-SHORTS_MAX_WORDS = 60          # CTA se pehle ki script — kul awaaz 25-35 second rahegi
+SHORTS_CTA_SECONDS = 7         # Shorts me aakhri itne second CTA patti dikhegi
+SHORTS_VOICE_SPEED = 1.5       # Shorts ki awaaz itni guna tez (1.0 = normal)
+SHORTS_MAX_WORDS = 100         # CTA se pehle ki script; 1.5x speed par kul awaaz ~25-35 second rahegi
 
 
 def get_youtube_service():
@@ -299,7 +300,7 @@ def generate_youtube_assets(title, content, max_retries=3):
     4. SCRIPT LENGTH & WORD COUNT: The script MUST be 500 to 650 words long to guarantee a video length of 3 to 4 minutes when spoken.
     5. PARAGRAPHS: Write the script broken down into clear, readable paragraphs (3 to 5 sentences per paragraph).
     6. TITLES: Create 3 high-CTR, viral, clickbait Hindi/Hinglish titles with emojis. Do NOT include site header names like 'BG_ALL_GOVT_JOB' in titles.
-    7. SHORTS SCRIPT: Also write a separate YouTube Shorts script of 45 to 55 words ONLY (about 18-20 seconds when spoken). Start with a shocking one-line hook, give only the most important facts (post name, key date/seats/last date), single paragraph, no greeting, NO goodbye line and NO phone/WhatsApp/contact line (the closing call-to-action is added automatically).
+    7. SHORTS SCRIPT: Also write a separate YouTube Shorts script of 85 to 95 words ONLY (about 30 seconds when spoken after the audio is sped up 1.5x). Start with a shocking one-line hook, give only the most important facts (post name, key date/seats/last date), single paragraph, no greeting, NO goodbye line and NO phone/WhatsApp/contact line (the closing call-to-action is added automatically).
     8. SHORTS TITLE: One viral Hindi/Hinglish title with emojis, max 70 characters, and it MUST end with #Shorts.
     9. Do NOT write any phone number / WhatsApp / contact call-to-action at the end of the long video_script either; it is added automatically.
 
@@ -311,7 +312,7 @@ def generate_youtube_assets(title, content, max_retries=3):
       "tags": ["tag1", "tag2", "tag3"],
       "hashtags": "#hashtag1 #hashtag2 #hashtag3",
       "shorts_title": "Viral title with emojis #Shorts",
-      "shorts_script": "45-55 word single-paragraph Hindi shorts script"
+      "shorts_script": "85-95 word single-paragraph Hindi shorts script"
     }}
     """
 
@@ -955,6 +956,28 @@ def get_post_url():
 # ==========================================
 # 9. Main Workflow
 # ==========================================
+def speed_up_audio(audio_path, speed):
+    """Awaaz ko `speed` guna tez karta hai (pitch same rehta hai). Fail ho to normal speed hi rehti hai."""
+    if abs(speed - 1.0) < 0.01:
+        return True
+    fast_path = audio_path.replace('.mp3', '_fast.mp3')
+    try:
+        subprocess.run([
+            'ffmpeg', '-i', audio_path,
+            '-filter:a', f'atempo={speed}',
+            '-ar', '44100', '-ac', '2', '-b:a', '128k', '-c:a', 'libmp3lame',
+            '-write_xing', '0', '-y', fast_path
+        ], capture_output=True, check=True)
+        os.replace(fast_path, audio_path)
+        print(f"⏩ Shorts ki awaaz {speed}x tez ho gayi.")
+        return True
+    except Exception as e:
+        print(f"⚠️ Awaaz tez nahi ho paayi, normal speed par chalegi: {e}")
+        if os.path.exists(fast_path):
+            os.remove(fast_path)
+        return False
+
+
 def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags, audio_file, video_file):
     """Shorts: awaaz -> vertical video -> YouTube upload.
     Yaha kuch fail ho to sirf Shorts skip hoti hai, lambi video par asar nahi padta."""
@@ -965,6 +988,7 @@ def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shor
         if not generate_male_voice_with_ffmpeg(shorts_script, audio_file) or not os.path.exists(audio_file):
             send_telegram(f"❌ Shorts ki voice generation fail ho gayi, Shorts skip:\n{post_url}")
             return
+        speed_up_audio(audio_file, SHORTS_VOICE_SPEED)
         if not create_video_with_ffmpeg(audio_file, post_url, shorts_title, video_file, shorts=True) or not os.path.exists(video_file):
             send_telegram(f"❌ Shorts video assembly fail ho gaya, upload skip:\n{post_url}")
             return
