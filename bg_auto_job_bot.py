@@ -1134,28 +1134,32 @@ def main():
 
                 print(f"📄 Assets package saved at: {txt_file}")
 
-                # 1. Voiceover Generation
-                voice_success = generate_male_voice_with_ffmpeg(script, audio_file)
+                video_mode = os.environ.get("VIDEO_MODE", "both").strip().lower()
+                if video_mode not in ("long", "shorts", "both"):
+                    raise ValueError("VIDEO_MODE must be long, shorts, or both")
+                print(f"🎬 Selected video mode: {video_mode.upper()}")
 
-                # 2. Video Assembly
-                if voice_success and os.path.exists(audio_file):
-                    video_success = create_video_with_ffmpeg(audio_file, post_url, selected_title, video_file, show_cta=show_cta)
-
-                    # 3. YouTube Uploading
-                    if video_success and os.path.exists(video_file):
-                        yt_url = upload_to_youtube(video_file, selected_title, seo_desc, tags)
-                        if yt_url:
-                            send_telegram(f"✅ Video upload ho gaya!\n{selected_title}\n{yt_url}")
+                # Long video pipeline — skip completely when running Shorts-only.
+                if video_mode in ("long", "both"):
+                    voice_success = generate_male_voice_with_ffmpeg(script, audio_file)
+                    if voice_success and os.path.exists(audio_file):
+                        video_success = create_video_with_ffmpeg(audio_file, post_url, selected_title, video_file, show_cta=show_cta)
+                        if video_success and os.path.exists(video_file):
+                            yt_url = upload_to_youtube(video_file, selected_title, seo_desc, tags)
+                            if yt_url:
+                                send_telegram(f"✅ Video upload ho gaya!\n{selected_title}\n{yt_url}")
+                            else:
+                                send_telegram(f"❌ Video ban gaya lekin YouTube upload fail ho gaya:\n{selected_title}")
                         else:
-                            send_telegram(f"❌ Video ban gaya lekin YouTube upload fail ho gaya:\n{selected_title}")
+                            send_telegram(f"❌ Video assembly fail ho gaya, upload skip:\n{post_url}")
                     else:
-                        send_telegram(f"❌ Video assembly fail ho gaya, upload skip:\n{post_url}")
-                else:
-                    send_telegram(f"❌ Voice generation fail ho gaya, video/upload skip:\n{post_url}")
+                        send_telegram(f"❌ Voice generation fail ho gaya, video/upload skip:\n{post_url}")
 
-                # 4. Shorts (lambi video ka result kuch bhi ho, Shorts alag se try hoti hai)
-                run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags,
-                                    shorts_audio_file, shorts_video_file, show_cta=show_cta)
+                # Shorts pipeline — skip completely when running Long-only.
+                if video_mode in ("shorts", "both"):
+                    run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags,
+                                        shorts_audio_file, shorts_video_file, show_cta=show_cta)
+
     else:
         send_telegram("❌ Koi URL nahi mila (POST_URL env var ya input khali tha).")
 
