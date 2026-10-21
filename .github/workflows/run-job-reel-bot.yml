@@ -1,0 +1,76 @@
+name: Run Job Reel Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      post_url:
+        description: "Blogger Post URL"
+        required: true
+        type: string
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-core
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Create YouTube credentials
+        env:
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+        run: |
+          printf '%s' "$YOUTUBE_CLIENT_SECRET" > client_secrets.json
+          printf '%s' "$YOUTUBE_TOKEN" > token.json
+
+      - name: Check YouTube credential files
+        run: |
+          test -s client_secrets.json
+          test -s token.json
+          echo "YouTube credential files created successfully."
+
+      - name: Run Job Bot
+        env:
+          POST_URL: ${{ github.event.inputs.post_url || github.event.client_payload.post_url }}
+          VIDEO_MODE: shorts
+
+          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+
+          GEMINI_MODEL_NAME: "gemini-3.6-flash"
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+        run: |
+          echo "Starting Job Reel Bot (Shorts only)..."
+          echo "Post URL received."
+          python bg_auto_job_bot.py
+
+      - name: Upload bot outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-outputs
+          path: bot_outputs/
+          retention-days: 7
+          if-no-files-found: ignore
