@@ -119,6 +119,50 @@ def wait_until_public(url, tries=12, delay=10):
     return False
 
 
+def _gql(api_key, query):
+    """Seedhi GraphQL query chalata hai; data dict lautata hai, warna exception."""
+    resp = requests.post(
+        API_URL,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"query": query},
+        timeout=60,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+    body = resp.json()
+    if body.get("errors"):
+        raise RuntimeError(json.dumps(body["errors"], ensure_ascii=False)[:400])
+    return body.get("data") or {}
+
+
+def discover_channels(api_key):
+    """API key se hi sab channels nikalta hai: [(channel_id, service, naam), ...]"""
+    data = _gql(api_key, "query { account { organizations { id name } } }")
+    orgs = (data.get("account") or {}).get("organizations") or []
+    found = []
+    for org in orgs:
+        q = ("query { channels(input: {organizationId: %s}) "
+             "{ id name displayName service } }") % json.dumps(org["id"])
+        for ch in (_gql(api_key, q).get("channels") or []):
+            label = ch.get("displayName") or ch.get("name") or ch["id"]
+            found.append((ch["id"], str(ch.get("service") or "").lower(), label))
+    return found
+
+
+def pick_channels(cfg):
+    """Kaun-kaun se channels par post karni hai: [(id, is_instagram, naam)]. Sirf API key kaafi hai."""
+    chosen = []
+    if cfg["ig"]:  # purana secret ho to wahi use hoga
+        chosen.append((cfg["ig"], True, "Instagram"))
+    else:
+        for cid, service, label in discover_channels(cfg["api_key"]):
+            if service == "instagram":
+                chosen.append((cid, True, f"Instagram ({label})"))
+    for cid in cfg["others"]:
+        chosen.append((cid, False, "channel"))
+    return chosen
+
+
 def create_post(api_key, mode, channel_id, video_url, caption, is_instagram):
     post_input = {
         "text": caption,
@@ -166,17 +210,28 @@ def main():
     REELS_DIR.mkdir(exist_ok=True)
     state = load_state()
     original_state = json.dumps(state, sort_keys=True)
-    channels = ([(cfg["ig"], True)] if cfg["ig"] else []) + [(c, False) for c in cfg["others"]]
 
-    pending = [f for f in sorted(REELS_DIR.glob("reel_*.mp4"))
-               if len(state.get(f.name, [])) < len(channels) or not channels]
+    # "ALL" = us reel ke saare channels par post ho chuki
+    pending = [f for f in sorted(REELS_DIR.glob("reel_*.mp4")) if "ALL" not in state.get(f.name, [])]
 
-    if pending:
-        if not cfg["api_key"] or not channels:
-            send_telegram("⚠️ Buffer secrets (BUFFER_API_KEY / BUFFER_INSTAGRAM_CHANNEL_ID) set nahi hain, reel Buffer par nahi gayi.")
-            pending = []
-    else:
+    channels = []
+    if not pending:
         print("Buffer ke liye koi nayi reel nahi.")
+    elif not cfg["api_key"]:
+        send_telegram("⚠️ BUFFER_API_KEY secret set nahi hai, reel Buffer par nahi gayi.")
+        pending = []
+    else:
+        try:
+            channels = pick_channels(cfg)
+        except Exception as e:
+            send_telegram(f"❌ Buffer se channels nahi mil paye (API key sahi hai?):\n{e}")
+            pending = []
+        else:
+            if not channels:
+                send_telegram("⚠️ Buffer account me koi Instagram channel nahi mila. Buffer me Instagram connect hai?")
+                pending = []
+            else:
+                print("Channels: " + ", ".join(name for _i, _g, name in channels))
 
     for f in pending:
         caption_file = f.with_suffix(".txt")
@@ -186,16 +241,18 @@ def main():
         if not wait_until_public(url):
             send_telegram(f"❌ Buffer: reel ka public URL ready nahi hua:\n{url}")
             continue
-        done = list(state.get(f.name, []))
-        for channel_id, is_ig in channels:
+        done = [c for c in state.get(f.name, []) if c != "ALL"]
+        for channel_id, is_ig, name in channels:
             if channel_id in done:
                 continue
             ok, info = create_post(cfg["api_key"], cfg["mode"], channel_id, url, caption, is_ig)
             if ok:
                 done.append(channel_id)
-                send_telegram(f"✅ Reel Buffer me {'queue' if cfg['mode'] == 'addToQueue' else 'post'} ho gayi ({'Instagram' if is_ig else 'channel'}).")
+                send_telegram(f"✅ Reel Buffer me {'queue' if cfg['mode'] == 'addToQueue' else 'post'} ho gayi: {name}")
             else:
-                send_telegram(f"❌ Buffer post fail ({'Instagram' if is_ig else 'channel'}):\n{info}")
+                send_telegram(f"❌ Buffer post fail ({name}):\n{info}")
+        if all(cid in done for cid, _g, _n in channels):
+            done.append("ALL")
         state[f.name] = done
         save_state(state)
 
