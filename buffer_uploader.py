@@ -150,20 +150,30 @@ def discover_channels(api_key):
 
 
 def pick_channels(cfg):
-    """Kaun-kaun se channels par post karni hai: [(id, is_instagram, naam)]. Sirf API key kaafi hai."""
+    """Kaun-kaun se channels par post karni hai: [(id, service, naam)]. Sirf API key kaafi hai.
+    service: "instagram" / "facebook" / "other". Instagram ke saath Facebook Page bhi apne aap judta hai."""
     chosen = []
+    seen = set()
     if cfg["ig"]:  # purana secret ho to wahi use hoga
-        chosen.append((cfg["ig"], True, "Instagram"))
-    else:
-        for cid, service, label in discover_channels(cfg["api_key"]):
-            if service == "instagram":
-                chosen.append((cid, True, f"Instagram ({label})"))
+        chosen.append((cfg["ig"], "instagram", "Instagram"))
+        seen.add(cfg["ig"])
+    for cid, service, label in discover_channels(cfg["api_key"]):
+        if cid in seen:
+            continue
+        if service == "instagram" and not cfg["ig"]:
+            chosen.append((cid, "instagram", f"Instagram ({label})"))
+            seen.add(cid)
+        elif service == "facebook":
+            chosen.append((cid, "facebook", f"Facebook ({label})"))
+            seen.add(cid)
     for cid in cfg["others"]:
-        chosen.append((cid, False, "channel"))
+        if cid not in seen:
+            chosen.append((cid, "other", "channel"))
+            seen.add(cid)
     return chosen
 
 
-def create_post(api_key, mode, channel_id, video_url, caption, is_instagram):
+def create_post(api_key, mode, channel_id, video_url, caption, service):
     post_input = {
         "text": caption,
         "channelId": channel_id,
@@ -171,8 +181,10 @@ def create_post(api_key, mode, channel_id, video_url, caption, is_instagram):
         "mode": mode,
         "assets": [{"video": {"url": video_url}}],
     }
-    if is_instagram:
+    if service == "instagram":
         post_input["metadata"] = {"instagram": {"type": "reel", "shouldShareToFeed": True}}
+    elif service == "facebook":
+        post_input["metadata"] = {"facebook": {"type": "reel"}}
     try:
         resp = requests.post(
             API_URL,
@@ -228,7 +240,7 @@ def main():
             pending = []
         else:
             if not channels:
-                send_telegram("⚠️ Buffer account me koi Instagram channel nahi mila. Buffer me Instagram connect hai?")
+                send_telegram("⚠️ Buffer account me koi Instagram/Facebook channel nahi mila. Buffer me connect hai?")
                 pending = []
             else:
                 print("Channels: " + ", ".join(name for _i, _g, name in channels))
@@ -242,10 +254,10 @@ def main():
             send_telegram(f"❌ Buffer: reel ka public URL ready nahi hua:\n{url}")
             continue
         done = [c for c in state.get(f.name, []) if c != "ALL"]
-        for channel_id, is_ig, name in channels:
+        for channel_id, service, name in channels:
             if channel_id in done:
                 continue
-            ok, info = create_post(cfg["api_key"], cfg["mode"], channel_id, url, caption, is_ig)
+            ok, info = create_post(cfg["api_key"], cfg["mode"], channel_id, url, caption, service)
             if ok:
                 done.append(channel_id)
                 send_telegram(f"✅ Reel Buffer me {'queue' if cfg['mode'] == 'addToQueue' else 'post'} ho gayi: {name}")
