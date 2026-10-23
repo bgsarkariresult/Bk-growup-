@@ -12,6 +12,9 @@ on:
     types:
       - run_job_bot
 
+permissions:
+  contents: write
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -51,6 +54,12 @@ jobs:
           test -s token.json
           echo "YouTube credential files created successfully."
 
+      - name: Cache Whisper model (subtitle timing)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-small-v1
+
       - name: Run Job Bot
         env:
           POST_URL: ${{ github.event.inputs.post_url || github.event.client_payload.post_url }}
@@ -65,10 +74,45 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+
         run: |
           echo "Starting Job Bot..."
           echo "Post URL received."
           python bg_auto_job_bot.py
+
+      - name: Commit reel for Buffer
+        if: always()
+        run: |
+          if ls reels/reel_*.mp4 >/dev/null 2>&1; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add reels
+            git diff --staged --quiet || git commit -m "chore: add reel for Buffer [skip ci]"
+            git pull --rebase
+            git push
+          fi
+
+      - name: Upload reel to Buffer
+        if: always()
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_INSTAGRAM_CHANNEL_ID: ${{ secrets.BUFFER_INSTAGRAM_CHANNEL_ID }}
+          BUFFER_OTHER_CHANNEL_IDS: ${{ secrets.BUFFER_OTHER_CHANNEL_IDS }}
+          BUFFER_MODE: ${{ vars.BUFFER_MODE }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python buffer_uploader.py
+
+      - name: Save Buffer state
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A reels uploaded.json
+          git diff --staged --quiet || git commit -m "chore: update Buffer state [skip ci]"
+          git pull --rebase
+          git push
 
       - name: Upload bot outputs
         if: always()
