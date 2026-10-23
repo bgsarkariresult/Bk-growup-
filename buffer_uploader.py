@@ -76,7 +76,7 @@ def queue_reel(video_path, caption):
     """Reel ko reels/ me rakhta hai (workflow baad me commit + Buffer par post karega).
     BUFFER_API_KEY set na ho to kuch nahi karta."""
     if not os.environ.get("BUFFER_API_KEY", "").strip():
-        print("ℹ️ BUFFER_API_KEY set nahi hai — Buffer queue skip.")
+        send_telegram("⚠️ BUFFER_API_KEY secret nahi mila (ya workflow ke 'Run Job Bot' step me pass nahi hua), isliye reel Buffer ke liye queue nahi hui.")
         return None
     size_mb = os.path.getsize(video_path) / (1024 * 1024)
     if size_mb > MAX_FILE_MB:
@@ -87,6 +87,7 @@ def queue_reel(video_path, caption):
     shutil.copyfile(video_path, REELS_DIR / name)
     (REELS_DIR / name).with_suffix(".txt").write_text(caption[:MAX_CAPTION].strip(), encoding="utf-8")
     print(f"📥 Reel Buffer ke liye queue me: reels/{name}")
+    send_telegram("📥 Reel Buffer ke liye queue me rakh di, ab workflow ke agle steps Buffer par bhejenge.")
     return name
 
 
