@@ -1045,6 +1045,19 @@ def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shor
         if not create_video_with_ffmpeg(audio_file, post_url, shorts_title, video_file, shorts=True, show_cta=show_cta) or not os.path.exists(video_file):
             send_telegram(f"❌ Shorts video assembly fail ho gaya, upload skip:\n{post_url}")
             return
+        # Hinglish subtitles (fail ho to reel bina subtitle ke hi aage jati hai)
+        try:
+            from subtitles import add_hinglish_subtitles
+            if not add_hinglish_subtitles(audio_file, shorts_script, video_file, cap_seconds=SHORTS_MAX_SECONDS):
+                send_telegram("⚠️ Hinglish subtitle nahi lag paye, reel bina subtitle ke ja rahi hai.")
+        except Exception as e:
+            send_telegram(f"⚠️ Subtitle step me error (reel bina subtitle ke jayegi): {e}")
+        # Wahi reel Buffer ke liye queue (workflow ke agle steps commit + upload karte hain)
+        try:
+            from buffer_uploader import queue_reel
+            queue_reel(video_file, f"{shorts_title}\n\n{shorts_desc}")
+        except Exception as e:
+            send_telegram(f"⚠️ Buffer queue me error (YouTube upload par asar nahi): {e}")
         yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags)
         if yt_url:
             send_telegram(f"✅ Shorts upload ho gayi!\n{shorts_title}\n{yt_url}")
