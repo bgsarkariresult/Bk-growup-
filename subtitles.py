@@ -202,7 +202,7 @@ def _parse_word_list(raw, n):
 
 
 def _llm_hinglish(words):
-    """Gemini (3 keys) -> g4f. Exactly len(words) Hinglish shabd lautata hai, warna None."""
+    """Gemini (3 keys) -> Groq -> g4f. Exactly len(words) Hinglish shabd lautata hai, warna None."""
     n = len(words)
     prompt = (
         "Convert each Hindi (Devanagari) word below into Hinglish: Hindi written in Roman letters, "
@@ -235,6 +235,28 @@ def _llm_hinglish(words):
                 time.sleep(1.5)
         except Exception as e:
             print(f"⚠️ Gemini Key #{idx} init fail: {e}")
+
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if groq_key:
+        try:
+            from groq import Groq
+            groq_client = Groq(api_key=groq_key)
+            for g_model in ("openai/gpt-oss-120b", "qwen/qwen3.8-27b"):
+                for attempt in (1, 2):
+                    try:
+                        resp = groq_client.chat.completions.create(
+                            model=g_model, messages=[{"role": "user", "content": prompt}],
+                            temperature=0.1, max_tokens=4096)
+                        res = _parse_word_list(resp.choices[0].message.content, n)
+                        if res:
+                            print(f"✅ Hinglish transliteration: Groq ({g_model})")
+                            return res
+                        print(f"⚠️ Groq {g_model} attempt {attempt}: shabd ginti match nahi hui")
+                    except Exception as e:
+                        print(f"⚠️ Groq {g_model} attempt {attempt} fail: {e}")
+                    time.sleep(1.5)
+        except Exception as e:
+            print(f"⚠️ Groq unavailable: {e}")
 
     try:
         from g4f.client import Client
