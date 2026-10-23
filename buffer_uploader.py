@@ -164,6 +164,7 @@ def main():
     cfg = _cfg()
     REELS_DIR.mkdir(exist_ok=True)
     state = load_state()
+    original_state = json.dumps(state, sort_keys=True)
     channels = ([(cfg["ig"], True)] if cfg["ig"] else []) + [(c, False) for c in cfg["others"]]
 
     pending = [f for f in sorted(REELS_DIR.glob("reel_*.mp4"))
@@ -198,7 +199,8 @@ def main():
         save_state(state)
 
     cleanup_old(state)
-    save_state(state)
+    if json.dumps(state, sort_keys=True) != original_state:
+        save_state(state)
     return 0
 
 
