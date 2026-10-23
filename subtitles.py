@@ -21,8 +21,8 @@ import unicodedata
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small").strip() or "small"
 GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-3.6-flash")
 
-WORDS_PER_CAPTION = 4
-MAX_CAPTION_CHARS = 26
+WORDS_PER_CAPTION = 3
+MAX_CAPTION_CHARS = 17
 SENTENCE_END = ("।", ".", "!", "?", ",", ";", ":", "|")
 
 # ------------------------------------------------------------------
@@ -348,7 +348,7 @@ def build_captions(script_words, roman_words, timings, cap_seconds):
     def flush():
         nonlocal cur, cur_chars
         if cur:
-            captions.append([" ".join(x[0] for x in cur), cur[0][1], cur[-1][2]])
+            captions.append([" ".join(x[0] for x in cur), cur[0][1], cur[-1][2], list(cur)])
         cur, cur_chars = [], 0
 
     for orig, rom, (s, e) in zip(script_words, roman_words, timings):
@@ -387,8 +387,9 @@ def _ass_time(t):
 
 
 def write_ass(captions, ass_path, width=1080, height=1920):
-    """Subtitle neeche CTA patti / Shorts buttons se upar rakhta hai (~62% height par)."""
-    font_size = 74
+    """Bada, saaf subtitle: safed text + kala outline; jo shabd bol raha hai us par peela box.
+    Subtitle neeche CTA patti / Shorts buttons se upar (~62% height par) rehta hai."""
+    font_size = 96
     margin_v = int(height * 0.36)  # neeche se; text ka niche ka kinara ~64% height par
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
@@ -397,14 +398,37 @@ def write_ass(captions, ass_path, width=1080, height=1920):
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,Noto Sans,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,"
-        f"-1,0,0,0,100,100,0,0,1,6,2,2,70,70,{margin_v},1\n\n"
+        # Cap: safed text, mota kala outline
+        f"Style: Cap,Noto Sans,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,"
+        f"-1,0,0,0,100,100,0,0,1,9,3,2,60,60,{margin_v},1\n"
+        # Hi: kala text, peela box (BorderStyle 3 = box, Outline = box ka padding)
+        f"Style: Hi,Noto Sans,{font_size},&H00000000,&H000000FF,&H0033C9FF,&H00000000,"
+        f"-1,0,0,0,100,100,0,0,3,16,0,2,60,60,{margin_v},1\n\n"
         "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
+
+    def clean(t):
+        return t.replace("\\", "").replace("{", "(").replace("}", ")")
+
     lines = []
-    for text, s, e in captions:
-        safe = text.replace("\\", "").replace("{", "(").replace("}", ")")
-        lines.append(f"Dialogue: 0,{_ass_time(s)},{_ass_time(e)},Default,,0,0,0,,{safe}")
+    for cap in captions:
+        text, s, e = cap[0], cap[1], cap[2]
+        words = cap[3] if len(cap) > 3 else []
+        # Layer 0: poora caption safed
+        lines.append(f"Dialogue: 0,{_ass_time(s)},{_ass_time(e)},Cap,,0,0,0,,{clean(text)}")
+        # Layer 1: har shabd ke bolne ke waqt sirf wahi shabd peele box me
+        for k, (rom, ws, we) in enumerate(words):
+            hs = s if k == 0 else ws
+            he = words[k + 1][1] if k + 1 < len(words) else e
+            he = min(max(he, hs + 0.12), e)
+            if he <= hs:
+                continue
+            parts = []
+            for j, (r2, _a, _b) in enumerate(words):
+                alpha = "&H00&" if j == k else "&HFF&"
+                parts.append("{\\alpha" + alpha + "}" + clean(r2))
+            lines.append(
+                f"Dialogue: 1,{_ass_time(hs)},{_ass_time(he)},Hi,,0,0,0,,{' '.join(parts)}")
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(header + "\n".join(lines) + "\n")
 
