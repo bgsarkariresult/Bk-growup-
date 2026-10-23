@@ -6,6 +6,7 @@ Pillow
 moviepy==1.0.3
 playwright
 google-genai
+groq
 google-auth-oauthlib
 google-auth-httplib2
 google-api-python-client

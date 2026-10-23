@@ -223,6 +223,21 @@ GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]  # khali keys hata do
 GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-3.6-flash")
 
 # ==========================================
+# Groq — Gemini ki teeno keys fail hone par fallback
+# ==========================================
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
+GROQ_CLIENT = None
+if GROQ_API_KEY:
+    try:
+        from groq import Groq
+        GROQ_CLIENT = Groq(api_key=GROQ_API_KEY)
+    except Exception as _e:
+        print(f"⚠️ Groq client nahi bana: {_e}")
+else:
+    print("⚠️ GROQ_API_KEY nahi mila (Gemini fail hone par Groq fallback nahi chalega).")
+
+# ==========================================
 # Telegram Notifier — status aur error dono yaha se jaate hai
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -362,9 +377,45 @@ def generate_youtube_assets(title, content, max_retries=3):
         send_telegram(f"⚠️ Gemini Key #{key_index} kaam nahi kar rahi, agli key try ho rahi hai...")
 
     # ---------------------------------------------------------
-    # OPTION 2: Secondary / Fallback - g4f Library
+    # OPTION 2: Groq (Gemini ki teeno keys fail hone par)
     # ---------------------------------------------------------
-    print("🔄 Gemini API models failed/unavailable. Switching to [Option 2] g4f Library Fallback...")
+    if GROQ_CLIENT:
+        print("🔄 Gemini failed. Switching to Groq...")
+        send_telegram("🔄 Gemini fail, ab Groq try ho raha hai...")
+        for g_model in GROQ_MODELS:
+            for attempt in range(1, max_retries + 1):
+                try:
+                    print(f"🔄 Groq {g_model} Attempt {attempt}/{max_retries}...")
+                    response = GROQ_CLIENT.chat.completions.create(
+                        model=g_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.8,
+                        max_tokens=8192,
+                        response_format={"type": "json_object"},
+                    )
+                    raw_text = response.choices[0].message.content.strip()
+                    clean_json = re.sub(r'^```json\s*|\s*```$', '', raw_text, flags=re.MULTILINE)
+                    data = json.loads(clean_json)
+
+                    if data.get("video_script"):
+                        data["video_script"] = format_script_paragraphs(data["video_script"])
+
+                    if data.get("video_script") and data.get("seo_title"):
+                        print(f"✅ AI Package generated using Groq ({g_model})!")
+                        send_telegram(f"✅ Script Groq se ban gaya ({g_model})")
+                        return data
+                except Exception as e:
+                    print(f"⚠️ Groq {g_model} Attempt {attempt} failed ({e}).")
+                    time.sleep(2)
+            print(f"➡️ Groq model {g_model} fail, agla model try...")
+        send_telegram("⚠️ Groq bhi fail, ab g4f try ho raha hai...")
+    else:
+        print("⚠️ Groq client nahi hai. Skipping Groq...")
+
+    # ---------------------------------------------------------
+    # OPTION 3: Last Fallback - g4f Library
+    # ---------------------------------------------------------
+    print("🔄 Gemini + Groq failed/unavailable. Switching to [Option 3] g4f Library Fallback...")
     for attempt in range(1, max_retries + 1):
         try:
             print(f"🔄 g4f Generation Attempt {attempt}/{max_retries}...")
@@ -388,7 +439,7 @@ def generate_youtube_assets(title, content, max_retries=3):
             print(f"⚠️ g4f Attempt {attempt} failed ({e}). Retrying...")
             time.sleep(2)
            
-    print("❌ AI Generation Error: Both Gemini API and g4f Library failed.")
+    print("❌ AI Generation Error: Gemini, Groq aur g4f teeno fail.")
     return None
 
 # ==========================================
