@@ -1236,7 +1236,10 @@ def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shor
             queue_reel(video_file, f"{shorts_title}\n\n{shorts_desc}")
         except Exception as e:
             send_telegram(f"⚠️ Buffer queue me error (YouTube upload par asar nahi): {e}")
-        thumb_file = video_file.replace(".mp4", "_thumbnail.jpg")\n        if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type):\n            thumb_file = None\n        yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags, thumbnail_path=thumb_file)
+        thumb_file = video_file.replace(".mp4", "_thumbnail.jpg")
+        if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type):
+            thumb_file = None
+        yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags, thumbnail_path=thumb_file)
         if yt_url:
             send_telegram(f"✅ Shorts upload ho gayi!\n{shorts_title}\n{yt_url}")
         else:
