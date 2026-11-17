@@ -1033,7 +1033,13 @@ def _load_font_for_word(word, size):
     candidates += ["DejaVuSans-Bold.ttf"]
     for name in candidates:
         try:
-            return ImageFont.truetype(name, size)
+            font = ImageFont.truetype(name, size)
+            if os.path.basename(name) == "Poppins.ttf":
+                try:
+                    font.set_variation_by_axes([800])
+                except Exception:
+                    pass
+            return font
         except Exception:
             continue
     return _load_font(size)
@@ -1141,6 +1147,34 @@ def create_thumbnail(video_path, title, output_path, content_type=None, shorts=F
                 os.remove(frame_path)
             except Exception:
                 pass
+
+
+def prepend_cover_frame(video_path, cover_path, seconds=1.5):
+    """Designed 9:16 cover ko reel ka first frame banata hai (Buffer API custom image accept nahi karta)."""
+    if not cover_path or not os.path.exists(cover_path):
+        return False
+    temp_path = video_path.rsplit(".", 1)[0] + "_cover_intro.mp4"
+    cmd = [
+        "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", str(seconds), "-i", cover_path,
+        "-i", video_path,
+        "-filter_complex",
+        "[0:v]scale=1080:1920,fps=30,setsar=1,format=yuv420p[cover];"
+        "[1:v]scale=1080:1920,fps=30,setsar=1,format=yuv420p[main];"
+        "[cover][main]concat=n=2:v=1:a=0[v];"
+        "[1:a]adelay=1500:all=1,asetpts=PTS-STARTPTS[a]",
+        "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast",
+        "-crf", "23", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", temp_path
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        os.replace(temp_path, video_path)
+        print(f"🖼️ Designed cover first frame me add ho gaya ({seconds}s).")
+        return True
+    except Exception as e:
+        print(f"⚠️ Cover frame video me add nahi hua: {e}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return False
 
 
 # 8. YouTube Auto Uploader
@@ -1269,15 +1303,18 @@ def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shor
                 send_telegram("⚠️ Hinglish subtitle nahi lag paye, reel bina subtitle ke ja rahi hai.")
         except Exception as e:
             send_telegram(f"⚠️ Subtitle step me error (reel bina subtitle ke jayegi): {e}")
-        # Wahi reel Buffer ke liye queue (workflow ke agle steps commit + upload karte hain)
+        # 9:16 custom cover banao; Buffer ke liye ise video ka first frame bhi rakho.
+        thumb_file = video_file.replace(".mp4", "_thumbnail.jpg")
+        if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type, shorts=True):
+            thumb_file = None
+        else:
+            prepend_cover_frame(video_file, thumb_file, seconds=1.5)
+        # Cover frame ke saath final reel ko Buffer queue me bhejo.
         try:
             from buffer_uploader import queue_reel
             queue_reel(video_file, f"{shorts_title}\n\n{shorts_desc}")
         except Exception as e:
             send_telegram(f"⚠️ Buffer queue me error (YouTube upload par asar nahi): {e}")
-        thumb_file = video_file.replace(".mp4", "_thumbnail.jpg")
-        if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type, shorts=True):
-            thumb_file = None
         yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags, thumbnail_path=thumb_file)
         if yt_url:
             send_telegram(f"✅ Shorts upload ho gayi!\n{shorts_title}\n{yt_url}")
