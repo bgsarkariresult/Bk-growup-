@@ -1009,19 +1009,20 @@ def create_video_with_ffmpeg(audio_path, post_url, video_title, output_video_pat
 
 
 # ==========================================
-# 7b. Thumbnail Maker (lambi video ke liye custom thumbnail)
+# 7b. Thumbnail Maker — BGCAREER fixed background templates
+# Templates are stored in thumbnail_templates/{vacancy,admit_card,result}.jpg
+# If a template is missing, the legacy video-frame thumbnail is used as a safe fallback.
 # ==========================================
 THUMB_W, THUMB_H = 1280, 720
-THUMB_MAX_BYTES = 2 * 1024 * 1024  # YouTube thumbnail limit: 2 MB
+THUMB_MAX_BYTES = 2 * 1024 * 1024
+THUMB_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "thumbnail_templates")
 
 
 def _load_hindi_font(size):
-    """Devanagari glyphs wala bold font dhundhta hai (workflow me fonts-noto-core install hota hai)."""
+    """Devanagari glyphs wala bold font dhundhta hai."""
     import glob
-    candidates = ["NotoSansDevanagari-Bold.ttf"]
-    found = sorted(glob.glob("/usr/share/fonts/**/NotoSansDevanagari*.ttf", recursive=True),
-                   key=lambda p: ("Bold" not in p, p))
-    candidates += found
+    candidates = sorted(glob.glob("/usr/share/fonts/**/NotoSansDevanagari-Bold.ttf", recursive=True))
+    candidates += sorted(glob.glob("/usr/share/fonts/**/NotoSansDevanagari*.ttf", recursive=True))
     candidates += ["NotoSans-Bold.ttf", "DejaVuSans-Bold.ttf"]
     for name in candidates:
         try:
@@ -1032,7 +1033,6 @@ def _load_hindi_font(size):
 
 
 def _wrap_to_width(draw, text, font, max_width, stroke_width=0):
-    """Words ko width ke hisaab se lines me todta hai."""
     lines, current = [], ""
     for word in text.split():
         trial = f"{current} {word}".strip()
@@ -1046,68 +1046,69 @@ def _wrap_to_width(draw, text, font, max_width, stroke_width=0):
     return lines
 
 
-def create_thumbnail(video_path, title, output_path):
-    """1280x720 JPG thumbnail: video ka ek frame (dhundhla + dark) + bada title text.
-    Kuch bhi fail ho to False return hota hai — video upload par koi asar nahi padta."""
+def create_thumbnail(video_path, title, output_path, content_type=None):
+    """Selected fixed BG template + dynamic Hindi title, exported as 1280x720 JPEG."""
     frame_path = output_path.replace('.jpg', '_frame.png')
     try:
-        bg = None
-        try:
-            subprocess.run(['ffmpeg', '-y', '-ss', '3', '-i', video_path, '-frames:v', '1', frame_path],
-                           capture_output=True, check=True)
-            if os.path.exists(frame_path):
-                bg = Image.open(frame_path).convert('RGB')
-        except Exception as e:
-            print(f"⚠️ Thumbnail ke liye frame nahi nikla, simple background use hoga: {e}")
-
-        if bg is not None:
-            scale = max(THUMB_W / bg.width, THUMB_H / bg.height)
-            bg = bg.resize((int(bg.width * scale) + 1, int(bg.height * scale) + 1), Image.Resampling.LANCZOS)
-            left, top = (bg.width - THUMB_W) // 2, (bg.height - THUMB_H) // 2
-            bg = bg.crop((left, top, left + THUMB_W, top + THUMB_H)).filter(ImageFilter.GaussianBlur(6))
-            bg = Image.blend(bg, Image.new('RGB', (THUMB_W, THUMB_H), (15, 23, 42)), 0.65)
+        kind = (content_type or detect_content_type(title or "", "")).strip().lower()
+        if kind not in ("vacancy", "admit", "result"):
+            kind = "vacancy"
+        template_name = {"vacancy": "vacancy.jpg", "admit": "admit_card.jpg", "result": "result.jpg"}[kind]
+        template_path = os.path.join(THUMB_TEMPLATE_DIR, template_name)
+        if os.path.exists(template_path):
+            bg = Image.open(template_path).convert("RGB").resize((THUMB_W, THUMB_H), Image.Resampling.LANCZOS)
+            print(f"🖼️ BG template selected: {template_name}")
         else:
-            bg = Image.new('RGB', (THUMB_W, THUMB_H), (15, 23, 42))
+            print(f"⚠️ Template missing: {template_path}; legacy thumbnail fallback.")
+            bg = None
+            try:
+                subprocess.run(['ffmpeg', '-y', '-ss', '3', '-i', video_path, '-frames:v', '1', frame_path],
+                               capture_output=True, check=True)
+                if os.path.exists(frame_path):
+                    frame = Image.open(frame_path).convert('RGB')
+                    scale = max(THUMB_W / frame.width, THUMB_H / frame.height)
+                    frame = frame.resize((int(frame.width * scale) + 1, int(frame.height * scale) + 1), Image.Resampling.LANCZOS)
+                    left, top = (frame.width - THUMB_W) // 2, (frame.height - THUMB_H) // 2
+                    bg = frame.crop((left, top, left + THUMB_W, top + THUMB_H)).filter(ImageFilter.GaussianBlur(6))
+                    bg = Image.blend(bg, Image.new('RGB', (THUMB_W, THUMB_H), (15, 23, 42)), 0.55)
+            except Exception as e:
+                print(f"⚠️ Video frame fallback failed: {e}")
+            if bg is None:
+                bg = Image.new('RGB', (THUMB_W, THUMB_H), (15, 23, 42))
 
+        # Bottom title panel: keeps the supplied template artwork intact and adds the current post title.
+        overlay = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
+        panel = Image.new("RGBA", (THUMB_W, 142), (5, 12, 24, 205))
+        overlay.alpha_composite(panel, (0, THUMB_H - 142))
+        bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
         draw = ImageDraw.Draw(bg)
-        draw.rectangle([(0, 0), (THUMB_W - 1, THUMB_H - 1)], outline=(234, 179, 8), width=12)
-
-        # Upar ka badge
-        badge_font = _load_hindi_font(40)
-        badge_text = "BK GROWUP  |  GOVT JOB UPDATE"
-        bw = int(draw.textlength(badge_text, font=badge_font))
-        draw.rectangle([(40, 40), (40 + bw + 50, 112)], fill=(234, 179, 8))
-        draw.text((65, 48), badge_text, fill=(15, 23, 42), font=badge_font)
-
-        # Title: emoji hatao (font me glyph nahi hota), phir box me fit hone tak font chhota karo
         clean_title = re.sub(r'[\U00010000-\U0010FFFF☀-➿️‍]', '', title or '')
-        clean_title = re.sub(r'\s+', ' ', clean_title).strip()[:90] or "Govt Job Update"
-        box_x, box_y, box_w, box_h = 70, 150, THUMB_W - 140, THUMB_H - 150 - 60
-        stroke = 5
+        clean_title = re.sub(r'\s+', ' ', clean_title).strip()[:100] or "सरकारी नौकरी अपडेट"
+        max_width, stroke = THUMB_W - 100, 3
         chosen = None
-        for size in range(120, 47, -6):
+        for size in range(66, 31, -4):
             font = _load_hindi_font(size)
-            lines = _wrap_to_width(draw, clean_title, font, box_w, stroke)
-            text = "\n".join(lines)
-            spacing = int(size * 0.28)
-            l, t, r, b = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, stroke_width=stroke)
-            chosen = (font, text, spacing, b - t)
-            if (r - l) <= box_w and (b - t) <= box_h and len(lines) <= 4:
+            lines = _wrap_to_width(draw, clean_title, font, max_width, stroke)
+            text = "\n".join(lines[:2])
+            spacing = int(size * 0.2)
+            box = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, stroke_width=stroke)
+            chosen = (font, text, spacing, box)
+            if box[2] - box[0] <= max_width and box[3] - box[1] <= 112 and len(lines) <= 2:
                 break
-        font, text, spacing, text_h = chosen
-        y = box_y + max(0, (box_h - text_h) // 2)
-        draw.multiline_text((box_x, y), text, font=font, fill=(255, 255, 255), spacing=spacing,
+        font, text, spacing, box = chosen
+        text_h = box[3] - box[1]
+        y = THUMB_H - 142 + max(8, (142 - text_h) // 2 - box[1])
+        draw.multiline_text((50, y), text, font=font, fill=(255, 255, 255), spacing=spacing,
                             stroke_width=stroke, stroke_fill=(0, 0, 0))
-
-        quality = 92
+        quality = 90
         bg.save(output_path, 'JPEG', quality=quality, optimize=True)
         while os.path.getsize(output_path) > THUMB_MAX_BYTES and quality > 50:
             quality -= 10
             bg.save(output_path, 'JPEG', quality=quality, optimize=True)
-        print(f"🖼️ Thumbnail ban gaya: {output_path}")
+        print(f"🖼️ Template thumbnail ready: {output_path}")
         return True
     except Exception as e:
-        print(f"⚠️ Thumbnail banane me error (video bina custom thumbnail ke upload hoga): {e}")
+        print(f"⚠️ Thumbnail error (video upload will continue without custom thumbnail): {e}")
         return False
     finally:
         if os.path.exists(frame_path):
@@ -1117,7 +1118,6 @@ def create_thumbnail(video_path, title, output_path):
                 pass
 
 
-# ==========================================
 # 8. YouTube Auto Uploader
 # ==========================================
 def set_youtube_thumbnail(youtube, video_id, thumbnail_path):
@@ -1209,7 +1209,7 @@ def speed_up_audio(audio_path, speed):
         return False
 
 
-def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags, audio_file, video_file, show_cta=True):
+def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags, audio_file, video_file, show_cta=True, content_type="vacancy"):
     """Shorts: awaaz -> vertical video -> YouTube upload.
     Yaha kuch fail ho to sirf Shorts skip hoti hai, lambi video par asar nahi padta."""
     try:
@@ -1236,7 +1236,7 @@ def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shor
             queue_reel(video_file, f"{shorts_title}\n\n{shorts_desc}")
         except Exception as e:
             send_telegram(f"⚠️ Buffer queue me error (YouTube upload par asar nahi): {e}")
-        yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags)
+        thumb_file = video_file.replace(".mp4", "_thumbnail.jpg")\n        if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type):\n            thumb_file = None\n        yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags, thumbnail_path=thumb_file)
         if yt_url:
             send_telegram(f"✅ Shorts upload ho gayi!\n{shorts_title}\n{yt_url}")
         else:
@@ -1337,7 +1337,7 @@ def main():
                         video_success = create_video_with_ffmpeg(audio_file, post_url, selected_title, video_file, show_cta=show_cta)
                         if video_success and os.path.exists(video_file):
                             thumb_file = os.path.join(output_dir, f"{filename_base}_thumbnail.jpg")
-                            if not create_thumbnail(video_file, selected_title, thumb_file):
+                            if not create_thumbnail(video_file, selected_title, thumb_file, content_type=content_type):
                                 thumb_file = None
                             yt_url = upload_to_youtube(video_file, selected_title, seo_desc, tags, thumbnail_path=thumb_file)
                             if yt_url:
@@ -1352,7 +1352,7 @@ def main():
                 # Shorts pipeline — skip completely when running Long-only.
                 if video_mode in ("shorts", "both"):
                     run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shorts_tags,
-                                        shorts_audio_file, shorts_video_file, show_cta=show_cta)
+                                        shorts_audio_file, shorts_video_file, show_cta=show_cta, content_type=content_type)
 
     else:
         send_telegram("❌ Koi URL nahi mila (POST_URL env var ya input khali tha).")
