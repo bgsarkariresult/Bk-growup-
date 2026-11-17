@@ -9,7 +9,7 @@ import textwrap
 from bs4 import BeautifulSoup
 from g4f.client import Client
 import edge_tts
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # ==========================================
 # PATCH: Fix moviepy ANTIALIAS issue for Pillow 10.0.0+
@@ -1009,10 +1009,135 @@ def create_video_with_ffmpeg(audio_path, post_url, video_title, output_video_pat
 
 
 # ==========================================
+# 7b. Thumbnail Maker (lambi video ke liye custom thumbnail)
+# ==========================================
+THUMB_W, THUMB_H = 1280, 720
+THUMB_MAX_BYTES = 2 * 1024 * 1024  # YouTube thumbnail limit: 2 MB
+
+
+def _load_hindi_font(size):
+    """Devanagari glyphs wala bold font dhundhta hai (workflow me fonts-noto-core install hota hai)."""
+    import glob
+    candidates = ["NotoSansDevanagari-Bold.ttf"]
+    found = sorted(glob.glob("/usr/share/fonts/**/NotoSansDevanagari*.ttf", recursive=True),
+                   key=lambda p: ("Bold" not in p, p))
+    candidates += found
+    candidates += ["NotoSans-Bold.ttf", "DejaVuSans-Bold.ttf"]
+    for name in candidates:
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            continue
+    return _load_font(size)
+
+
+def _wrap_to_width(draw, text, font, max_width, stroke_width=0):
+    """Words ko width ke hisaab se lines me todta hai."""
+    lines, current = [], ""
+    for word in text.split():
+        trial = f"{current} {word}".strip()
+        if draw.textlength(trial, font=font) + 2 * stroke_width <= max_width or not current:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def create_thumbnail(video_path, title, output_path):
+    """1280x720 JPG thumbnail: video ka ek frame (dhundhla + dark) + bada title text.
+    Kuch bhi fail ho to False return hota hai — video upload par koi asar nahi padta."""
+    frame_path = output_path.replace('.jpg', '_frame.png')
+    try:
+        bg = None
+        try:
+            subprocess.run(['ffmpeg', '-y', '-ss', '3', '-i', video_path, '-frames:v', '1', frame_path],
+                           capture_output=True, check=True)
+            if os.path.exists(frame_path):
+                bg = Image.open(frame_path).convert('RGB')
+        except Exception as e:
+            print(f"⚠️ Thumbnail ke liye frame nahi nikla, simple background use hoga: {e}")
+
+        if bg is not None:
+            scale = max(THUMB_W / bg.width, THUMB_H / bg.height)
+            bg = bg.resize((int(bg.width * scale) + 1, int(bg.height * scale) + 1), Image.Resampling.LANCZOS)
+            left, top = (bg.width - THUMB_W) // 2, (bg.height - THUMB_H) // 2
+            bg = bg.crop((left, top, left + THUMB_W, top + THUMB_H)).filter(ImageFilter.GaussianBlur(6))
+            bg = Image.blend(bg, Image.new('RGB', (THUMB_W, THUMB_H), (15, 23, 42)), 0.65)
+        else:
+            bg = Image.new('RGB', (THUMB_W, THUMB_H), (15, 23, 42))
+
+        draw = ImageDraw.Draw(bg)
+        draw.rectangle([(0, 0), (THUMB_W - 1, THUMB_H - 1)], outline=(234, 179, 8), width=12)
+
+        # Upar ka badge
+        badge_font = _load_hindi_font(40)
+        badge_text = "BK GROWUP  |  GOVT JOB UPDATE"
+        bw = int(draw.textlength(badge_text, font=badge_font))
+        draw.rectangle([(40, 40), (40 + bw + 50, 112)], fill=(234, 179, 8))
+        draw.text((65, 48), badge_text, fill=(15, 23, 42), font=badge_font)
+
+        # Title: emoji hatao (font me glyph nahi hota), phir box me fit hone tak font chhota karo
+        clean_title = re.sub(r'[\U00010000-\U0010FFFF☀-➿️‍]', '', title or '')
+        clean_title = re.sub(r'\s+', ' ', clean_title).strip()[:90] or "Govt Job Update"
+        box_x, box_y, box_w, box_h = 70, 150, THUMB_W - 140, THUMB_H - 150 - 60
+        stroke = 5
+        chosen = None
+        for size in range(120, 47, -6):
+            font = _load_hindi_font(size)
+            lines = _wrap_to_width(draw, clean_title, font, box_w, stroke)
+            text = "\n".join(lines)
+            spacing = int(size * 0.28)
+            l, t, r, b = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, stroke_width=stroke)
+            chosen = (font, text, spacing, b - t)
+            if (r - l) <= box_w and (b - t) <= box_h and len(lines) <= 4:
+                break
+        font, text, spacing, text_h = chosen
+        y = box_y + max(0, (box_h - text_h) // 2)
+        draw.multiline_text((box_x, y), text, font=font, fill=(255, 255, 255), spacing=spacing,
+                            stroke_width=stroke, stroke_fill=(0, 0, 0))
+
+        quality = 92
+        bg.save(output_path, 'JPEG', quality=quality, optimize=True)
+        while os.path.getsize(output_path) > THUMB_MAX_BYTES and quality > 50:
+            quality -= 10
+            bg.save(output_path, 'JPEG', quality=quality, optimize=True)
+        print(f"🖼️ Thumbnail ban gaya: {output_path}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Thumbnail banane me error (video bina custom thumbnail ke upload hoga): {e}")
+        return False
+    finally:
+        if os.path.exists(frame_path):
+            try:
+                os.remove(frame_path)
+            except Exception:
+                pass
+
+
+# ==========================================
 # 8. YouTube Auto Uploader
 # ==========================================
-def upload_to_youtube(video_path, title, description, tags):
-    print("📤 Uploading Video to YouTube as UNLISTED...")
+def set_youtube_thumbnail(youtube, video_id, thumbnail_path):
+    try:
+        media = MediaFileUpload(thumbnail_path, mimetype='image/jpeg', resumable=False)
+        youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
+        print("🖼️ Thumbnail YouTube par set ho gaya.")
+        return True
+    except Exception as e:
+        print(f"⚠️ Thumbnail set nahi hua: {e}")
+        send_telegram(f"⚠️ Video upload ho gaya lekin thumbnail set nahi hua (channel verified hai?):\n{e}")
+        return False
+
+
+def upload_to_youtube(video_path, title, description, tags, thumbnail_path=None):
+    # Default PUBLIC. Badalna ho to GitHub me YOUTUBE_PRIVACY env var (public / unlisted / private) do.
+    privacy = os.environ.get("YOUTUBE_PRIVACY", "public").strip().lower()
+    if privacy not in ("public", "unlisted", "private"):
+        privacy = "public"
+    print(f"📤 Uploading Video to YouTube as {privacy.upper()}...")
     youtube = get_youtube_service()
     if not youtube:
         print("⚠️ YouTube Upload Skipped.")
@@ -1026,7 +1151,7 @@ def upload_to_youtube(video_path, title, description, tags):
             'categoryId': '27'
         },
         'status': {
-            'privacyStatus': 'unlisted',
+            'privacyStatus': privacy,
             'selfDeclaredMadeForKids': False
         }
     }
@@ -1041,6 +1166,8 @@ def upload_to_youtube(video_path, title, description, tags):
                 print(f"⏳ Upload Progress: {int(status.progress() * 100)}%")
         video_id = response.get('id')
         print(f"✅ Video Uploaded Successfully! URL: https://youtu.be/{video_id}")
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            set_youtube_thumbnail(youtube, video_id, thumbnail_path)
         return f"https://youtu.be/{video_id}"
     except Exception as e:
         print(f"❌ YouTube Upload Failed: {e}")
@@ -1209,7 +1336,10 @@ def main():
                     if voice_success and os.path.exists(audio_file):
                         video_success = create_video_with_ffmpeg(audio_file, post_url, selected_title, video_file, show_cta=show_cta)
                         if video_success and os.path.exists(video_file):
-                            yt_url = upload_to_youtube(video_file, selected_title, seo_desc, tags)
+                            thumb_file = os.path.join(output_dir, f"{filename_base}_thumbnail.jpg")
+                            if not create_thumbnail(video_file, selected_title, thumb_file):
+                                thumb_file = None
+                            yt_url = upload_to_youtube(video_file, selected_title, seo_desc, tags, thumbnail_path=thumb_file)
                             if yt_url:
                                 send_telegram(f"✅ Video upload ho gaya!\n{selected_title}\n{yt_url}")
                             else:
