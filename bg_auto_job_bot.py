@@ -1018,12 +1018,19 @@ THUMB_MAX_BYTES = 2 * 1024 * 1024
 THUMB_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "thumbnail_templates")
 
 
-def _load_hindi_font(size):
-    """Devanagari glyphs wala bold font dhundhta hai."""
+def _load_font_for_word(word, size):
+    """Hindi ke liye Noto Sans Devanagari; English ke liye Poppins."""
     import glob
-    candidates = sorted(glob.glob("/usr/share/fonts/**/NotoSansDevanagari-Bold.ttf", recursive=True))
-    candidates += sorted(glob.glob("/usr/share/fonts/**/NotoSansDevanagari*.ttf", recursive=True))
-    candidates += ["NotoSans-Bold.ttf", "DejaVuSans-Bold.ttf"]
+    if re.search(r'[\u0900-\u097F]', word or ''):
+        candidates = sorted(glob.glob("/usr/share/fonts/**/NotoSansDevanagari-Bold.ttf", recursive=True))
+        candidates += sorted(glob.glob("/usr/share/fonts/**/NotoSansDevanagari*.ttf", recursive=True))
+    else:
+        candidates = [
+            os.path.expanduser("~/.local/share/fonts/Poppins.ttf"),
+            "/usr/share/fonts/truetype/poppins/Poppins-ExtraBold.ttf",
+            "/usr/share/fonts/truetype/poppins/Poppins-Bold.ttf",
+        ]
+    candidates += ["DejaVuSans-Bold.ttf"]
     for name in candidates:
         try:
             return ImageFont.truetype(name, size)
@@ -1032,23 +1039,35 @@ def _load_hindi_font(size):
     return _load_font(size)
 
 
-def _wrap_to_width(draw, text, font, max_width, stroke_width=0):
-    lines, current = [], ""
-    for word in text.split():
-        trial = f"{current} {word}".strip()
-        if draw.textlength(trial, font=font) + 2 * stroke_width <= max_width or not current:
+def _fit_template(image, width, height):
+    scale = max(width / image.width, height / image.height)
+    nw, nh = int(image.width * scale), int(image.height * scale)
+    image = image.resize((nw, nh), Image.Resampling.LANCZOS)
+    left, top = max(0, (nw - width) // 2), max(0, (nh - height) // 2)
+    return image.crop((left, top, left + width, top + height))
+
+
+def _wrap_mixed_text(draw, text, size, max_width, stroke):
+    words = text.split()
+    lines, current = [], []
+    for word in words:
+        trial = current + [word]
+        width = sum(draw.textlength(w, font=_load_font_for_word(w, size)) for w in trial)
+        width += sum(draw.textlength(" ", font=_load_font_for_word(w, size)) for _ in range(max(0, len(trial) - 1)))
+        if width + stroke * 2 <= max_width or not current:
             current = trial
         else:
             lines.append(current)
-            current = word
+            current = [word]
     if current:
         lines.append(current)
     return lines
 
 
-def create_thumbnail(video_path, title, output_path, content_type=None):
-    """Selected fixed BG template + dynamic Hindi title, exported as 1280x720 JPEG."""
-    frame_path = output_path.replace('.jpg', '_frame.png')
+def create_thumbnail(video_path, title, output_path, content_type=None, shorts=False):
+    """Long thumbnail 1280x720; Reel/Shorts cover 1080x1920."""
+    frame_path = output_path.rsplit('.', 1)[0] + '_frame.png'
+    width, height = (1080, 1920) if shorts else (1280, 720)
     try:
         kind = (content_type or detect_content_type(title or "", "")).strip().lower()
         if kind not in ("vacancy", "admit", "result"):
@@ -1056,59 +1075,65 @@ def create_thumbnail(video_path, title, output_path, content_type=None):
         template_name = {"vacancy": "vacancy.jpg", "admit": "admit_card.jpg", "result": "result.jpg"}[kind]
         template_path = os.path.join(THUMB_TEMPLATE_DIR, template_name)
         if os.path.exists(template_path):
-            bg = Image.open(template_path).convert("RGB").resize((THUMB_W, THUMB_H), Image.Resampling.LANCZOS)
-            print(f"🖼️ BG template selected: {template_name}")
+            bg = _fit_template(Image.open(template_path).convert("RGB"), width, height)
+            print(f"🖼️ {'Vertical 9:16' if shorts else 'Horizontal 16:9'} template: {template_name}")
         else:
-            print(f"⚠️ Template missing: {template_path}; legacy thumbnail fallback.")
+            print(f"⚠️ Template missing: {template_path}; using video frame fallback.")
             bg = None
             try:
                 subprocess.run(['ffmpeg', '-y', '-ss', '3', '-i', video_path, '-frames:v', '1', frame_path],
                                capture_output=True, check=True)
                 if os.path.exists(frame_path):
-                    frame = Image.open(frame_path).convert('RGB')
-                    scale = max(THUMB_W / frame.width, THUMB_H / frame.height)
-                    frame = frame.resize((int(frame.width * scale) + 1, int(frame.height * scale) + 1), Image.Resampling.LANCZOS)
-                    left, top = (frame.width - THUMB_W) // 2, (frame.height - THUMB_H) // 2
-                    bg = frame.crop((left, top, left + THUMB_W, top + THUMB_H)).filter(ImageFilter.GaussianBlur(6))
-                    bg = Image.blend(bg, Image.new('RGB', (THUMB_W, THUMB_H), (15, 23, 42)), 0.55)
+                    bg = _fit_template(Image.open(frame_path).convert('RGB'), width, height)
+                    bg = bg.filter(ImageFilter.GaussianBlur(6))
+                    bg = Image.blend(bg, Image.new('RGB', (width, height), (15, 23, 42)), 0.55)
             except Exception as e:
-                print(f"⚠️ Video frame fallback failed: {e}")
+                print(f"⚠️ Frame fallback failed: {e}")
             if bg is None:
-                bg = Image.new('RGB', (THUMB_W, THUMB_H), (15, 23, 42))
+                bg = Image.new('RGB', (width, height), (15, 23, 42))
 
-        # Bottom title panel: keeps the supplied template artwork intact and adds the current post title.
-        overlay = Image.new("RGBA", (THUMB_W, THUMB_H), (0, 0, 0, 0))
-        panel = Image.new("RGBA", (THUMB_W, 142), (5, 12, 24, 205))
-        overlay.alpha_composite(panel, (0, THUMB_H - 142))
+        panel_h = 360 if shorts else 142
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        panel = Image.new("RGBA", (width, panel_h), (5, 12, 24, 220))
+        overlay.alpha_composite(panel, (0, height - panel_h))
         bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
         draw = ImageDraw.Draw(bg)
         clean_title = re.sub(r'[\U00010000-\U0010FFFF☀-➿️‍]', '', title or '')
-        clean_title = re.sub(r'\s+', ' ', clean_title).strip()[:100] or "सरकारी नौकरी अपडेट"
-        max_width, stroke = THUMB_W - 100, 3
+        clean_title = re.sub(r'\s+', ' ', clean_title).strip()[:120] or "सरकारी नौकरी अपडेट"
+        stroke, max_width = 3, width - (90 if shorts else 100)
+        max_lines = 4 if shorts else 2
         chosen = None
-        for size in range(66, 31, -4):
-            font = _load_hindi_font(size)
-            lines = _wrap_to_width(draw, clean_title, font, max_width, stroke)
-            text = "\n".join(lines[:2])
-            spacing = int(size * 0.2)
-            box = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, stroke_width=stroke)
-            chosen = (font, text, spacing, box)
-            if box[2] - box[0] <= max_width and box[3] - box[1] <= 112 and len(lines) <= 2:
+        for size in range(88 if shorts else 66, 35, -4):
+            lines = _wrap_mixed_text(draw, clean_title, size, max_width, stroke)
+            if len(lines) <= max_lines and int(size * 1.28) * len(lines) <= panel_h - 36:
+                chosen = (size, lines, int(size * 1.28))
                 break
-        font, text, spacing, box = chosen
-        text_h = box[3] - box[1]
-        y = THUMB_H - 142 + max(8, (142 - text_h) // 2 - box[1])
-        draw.multiline_text((50, y), text, font=font, fill=(255, 255, 255), spacing=spacing,
-                            stroke_width=stroke, stroke_fill=(0, 0, 0))
-        quality = 90
+        if chosen is None:
+            size = 42 if shorts else 34
+            lines = _wrap_mixed_text(draw, clean_title, size, max_width, stroke)[:max_lines]
+            chosen = (size, lines, int(size * 1.25))
+        size, lines, line_h = chosen
+        total_h = line_h * len(lines)
+        y = height - panel_h + max(12, (panel_h - total_h) // 2)
+        for line in lines:
+            fonts = [_load_font_for_word(word, size) for word in line]
+            widths = [draw.textlength(word, font=font) for word, font in zip(line, fonts)]
+            gap = size * 0.22
+            x = max(24, (width - sum(widths) - gap * max(0, len(line) - 1)) / 2)
+            for word, font, word_width in zip(line, fonts, widths):
+                draw.text((int(x), y), word, font=font, fill=(255, 255, 255),
+                          stroke_width=stroke, stroke_fill=(0, 0, 0))
+                x += word_width + gap
+            y += line_h
+        quality = 92
         bg.save(output_path, 'JPEG', quality=quality, optimize=True)
-        while os.path.getsize(output_path) > THUMB_MAX_BYTES and quality > 50:
+        while os.path.getsize(output_path) > 2 * 1024 * 1024 and quality > 50:
             quality -= 10
             bg.save(output_path, 'JPEG', quality=quality, optimize=True)
-        print(f"🖼️ Template thumbnail ready: {output_path}")
+        print(f"🖼️ Thumbnail ready: {output_path} ({width}x{height})")
         return True
     except Exception as e:
-        print(f"⚠️ Thumbnail error (video upload will continue without custom thumbnail): {e}")
+        print(f"⚠️ Thumbnail error: {e}")
         return False
     finally:
         if os.path.exists(frame_path):
@@ -1121,14 +1146,28 @@ def create_thumbnail(video_path, title, output_path, content_type=None):
 # 8. YouTube Auto Uploader
 # ==========================================
 def set_youtube_thumbnail(youtube, video_id, thumbnail_path):
+    """YouTube processing complete hone ke baad thumbnail set karta hai."""
     try:
+        import time as _time
+        for attempt in range(18):
+            status = youtube.videos().list(part="processingDetails", id=video_id).execute()
+            items = status.get("items", [])
+            processing = (items[0].get("processingDetails") or {}).get("processingStatus") if items else None
+            if processing == "succeeded":
+                break
+            if processing == "failed":
+                raise RuntimeError("YouTube video processing failed.")
+            print(f"⏳ YouTube processing: {processing or 'unknown'}; retry {attempt + 1}/18")
+            _time.sleep(10)
+        else:
+            raise TimeoutError("YouTube processing did not finish within 3 minutes.")
         media = MediaFileUpload(thumbnail_path, mimetype='image/jpeg', resumable=False)
         youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
-        print("🖼️ Thumbnail YouTube par set ho gaya.")
+        print("🖼️ Custom thumbnail YouTube par set ho gaya.")
         return True
     except Exception as e:
         print(f"⚠️ Thumbnail set nahi hua: {e}")
-        send_telegram(f"⚠️ Video upload ho gaya lekin thumbnail set nahi hua (channel verified hai?):\n{e}")
+        send_telegram(f"⚠️ Video upload ho gaya lekin thumbnail set nahi hua:\n{e}")
         return False
 
 
@@ -1237,7 +1276,7 @@ def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shor
         except Exception as e:
             send_telegram(f"⚠️ Buffer queue me error (YouTube upload par asar nahi): {e}")
         thumb_file = video_file.replace(".mp4", "_thumbnail.jpg")
-        if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type):
+        if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type, shorts=True):
             thumb_file = None
         yt_url = upload_to_youtube(video_file, shorts_title, shorts_desc, shorts_tags, thumbnail_path=thumb_file)
         if yt_url:
