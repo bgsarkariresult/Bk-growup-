@@ -64,6 +64,7 @@ jobs:
         env:
           POST_URL: ${{ github.event.inputs.post_url || github.event.client_payload.post_url }}
           VIDEO_MODE: ${{ github.event.client_payload.video_mode || 'long' }}
+          YOUTUBE_PRIVACY: unlisted
 
           GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
