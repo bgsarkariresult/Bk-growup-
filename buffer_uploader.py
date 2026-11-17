@@ -174,12 +174,16 @@ def pick_channels(cfg):
 
 
 def create_post(api_key, mode, channel_id, video_url, caption, service):
+    video_asset = {"url": video_url}
+    if service == "instagram":
+        # Buffer Instagram API supports selecting the video's first frame as the Reel cover.
+        video_asset["metadata"] = {"thumbnailOffset": 0}
     post_input = {
         "text": caption,
         "channelId": channel_id,
         "schedulingType": "automatic",
         "mode": mode,
-        "assets": [{"video": {"url": video_url}}],
+        "assets": [{"video": video_asset}],
     }
     if service == "instagram":
         post_input["metadata"] = {"instagram": {"type": "reel", "shouldShareToFeed": True}}
