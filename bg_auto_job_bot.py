@@ -1134,9 +1134,9 @@ def set_youtube_thumbnail(youtube, video_id, thumbnail_path):
 
 def upload_to_youtube(video_path, title, description, tags, thumbnail_path=None):
     # Default PUBLIC. Badalna ho to GitHub me YOUTUBE_PRIVACY env var (public / unlisted / private) do.
-    privacy = os.environ.get("YOUTUBE_PRIVACY", "public").strip().lower()
+    privacy = os.environ.get("YOUTUBE_PRIVACY", "unlisted").strip().lower()
     if privacy not in ("public", "unlisted", "private"):
-        privacy = "public"
+        privacy = "unlisted"
     print(f"📤 Uploading Video to YouTube as {privacy.upper()}...")
     youtube = get_youtube_service()
     if not youtube:
