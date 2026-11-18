@@ -1059,7 +1059,7 @@ def _wrap_mixed_text(draw, text, size, max_width, stroke):
     for word in words:
         trial = current + [word]
         width = sum(draw.textlength(w, font=_load_font_for_word(w, size)) for w in trial)
-        width += sum(draw.textlength(" ", font=_load_font_for_word(w, size)) for _ in range(max(0, len(trial) - 1)))
+        width += draw.textlength(" ", font=_load_font_for_word(" ", size)) * max(0, len(trial) - 1)
         if width + stroke * 2 <= max_width or not current:
             current = trial
         else:
