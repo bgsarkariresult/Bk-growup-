@@ -1098,36 +1098,35 @@ def create_thumbnail(video_path, title, output_path, content_type=None, shorts=F
             if bg is None:
                 bg = Image.new('RGB', (width, height), (15, 23, 42))
 
-        panel_h = 360 if shorts else 142
-        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        panel = Image.new("RGBA", (width, panel_h), (5, 12, 24, 220))
-        overlay.alpha_composite(panel, (0, height - panel_h))
-        bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
+        # Headline ko reference thumbnail ki tarah TOP par rakho;
+        # neeche ka black caption strip bilkul mat banao.
         draw = ImageDraw.Draw(bg)
         clean_title = re.sub(r'[\U00010000-\U0010FFFF☀-➿️‍]', '', title or '')
         clean_title = re.sub(r'\s+', ' ', clean_title).strip()[:120] or "सरकारी नौकरी अपडेट"
         stroke, max_width = 3, width - (90 if shorts else 100)
-        max_lines = 4 if shorts else 2
+        max_lines = 3 if shorts else 2
+        top_area_h = int(height * (0.22 if shorts else 0.18))
         chosen = None
-        for size in range(88 if shorts else 66, 35, -4):
+        for size in range(92 if shorts else 76, 29, -3):
             lines = _wrap_mixed_text(draw, clean_title, size, max_width, stroke)
-            if len(lines) <= max_lines and int(size * 1.28) * len(lines) <= panel_h - 36:
-                chosen = (size, lines, int(size * 1.28))
+            line_h = int(size * 1.18)
+            if len(lines) <= max_lines and line_h * len(lines) <= top_area_h - 12:
+                chosen = (size, lines, line_h)
                 break
         if chosen is None:
-            size = 42 if shorts else 34
+            size = 30 if shorts else 28
             lines = _wrap_mixed_text(draw, clean_title, size, max_width, stroke)[:max_lines]
-            chosen = (size, lines, int(size * 1.25))
+            chosen = (size, lines, int(size * 1.18))
         size, lines, line_h = chosen
         total_h = line_h * len(lines)
-        y = height - panel_h + max(12, (panel_h - total_h) // 2)
+        y = max(12, (top_area_h - total_h) // 2)
         for line in lines:
             fonts = [_load_font_for_word(word, size) for word in line]
             widths = [draw.textlength(word, font=font) for word, font in zip(line, fonts)]
-            gap = size * 0.22
+            gap = size * 0.18
             x = max(24, (width - sum(widths) - gap * max(0, len(line) - 1)) / 2)
             for word, font, word_width in zip(line, fonts, widths):
-                draw.text((int(x), y), word, font=font, fill=(255, 255, 255),
+                draw.text((int(x), y), word, font=font, fill=(255, 193, 7),
                           stroke_width=stroke, stroke_fill=(0, 0, 0))
                 x += word_width + gap
             y += line_h
