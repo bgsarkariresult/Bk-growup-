@@ -1180,25 +1180,23 @@ def prepend_cover_frame(video_path, cover_path, seconds=1.5):
 # 8. YouTube Auto Uploader
 # ==========================================
 def set_youtube_thumbnail(youtube, video_id, thumbnail_path):
-    """YouTube processing complete hone ke baad thumbnail set karta hai."""
+    """Upload custom thumbnail with retry; avoid videos.list processingDetails read scope."""
     try:
         import time as _time
         for attempt in range(18):
-            status = youtube.videos().list(part="processingDetails", id=video_id).execute()
-            items = status.get("items", [])
-            processing = (items[0].get("processingDetails") or {}).get("processingStatus") if items else None
-            if processing == "succeeded":
-                break
-            if processing == "failed":
-                raise RuntimeError("YouTube video processing failed.")
-            print(f"⏳ YouTube processing: {processing or 'unknown'}; retry {attempt + 1}/18")
-            _time.sleep(10)
-        else:
-            raise TimeoutError("YouTube processing did not finish within 3 minutes.")
-        media = MediaFileUpload(thumbnail_path, mimetype='image/jpeg', resumable=False)
-        youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
-        print("🖼️ Custom thumbnail YouTube par set ho gaya.")
-        return True
+            try:
+                media = MediaFileUpload(thumbnail_path, mimetype='image/jpeg', resumable=False)
+                youtube.thumbnails().set(videoId=video_id, media_body=media).execute()
+                print("🖼️ Custom thumbnail YouTube par set ho gaya.")
+                return True
+            except Exception as upload_error:
+                error_text = str(upload_error)
+                if "insufficient authentication scopes" in error_text.lower() or "insufficientpermissions" in error_text.lower():
+                    raise
+                if attempt == 17:
+                    raise
+                print(f"⏳ Thumbnail abhi accept nahi hua; retry {attempt + 1}/18: {error_text}")
+                _time.sleep(10)
     except Exception as e:
         print(f"⚠️ Thumbnail set nahi hua: {e}")
         send_telegram(f"⚠️ Video upload ho gaya lekin thumbnail set nahi hua:\n{e}")
