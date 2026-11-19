@@ -1070,6 +1070,56 @@ def _wrap_mixed_text(draw, text, size, max_width, stroke):
     return lines
 
 
+def _clean_thumbnail_text(text):
+    text = re.sub(r'[\U00010000-\U0010FFFF☀-➿️‍]', '', text or '')
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _split_thumbnail_title(title, max_parts=2):
+    """Title ko natural word boundary par boxes ke liye baantta hai."""
+    words = _clean_thumbnail_text(title).split()
+    if not words:
+        return ["सरकारी नौकरी अपडेट"]
+    if max_parts == 1 or len(words) < 3:
+        return [" ".join(words)]
+    split_at = (len(words) + 1) // 2
+    return [" ".join(words[:split_at]), " ".join(words[split_at:])]
+
+
+def _draw_text_in_box(draw, text, box, width, height, fill, stroke_fill=(0, 0, 0)):
+    """Normalized template box ke andar text ko auto-fit karke center karta hai."""
+    x1, y1, x2, y2 = box
+    left, top = int(x1 * width), int(y1 * height)
+    right, bottom = int(x2 * width), int(y2 * height)
+    pad_x, pad_y = max(12, int(width * 0.012)), max(6, int(height * 0.012))
+    max_w, max_h = right - left - 2 * pad_x, bottom - top - 2 * pad_y
+    stroke = max(1, int(width * 0.0025))
+    chosen = None
+    for size in range(int((bottom-top) * 0.58), 17, -2):
+        lines = _wrap_mixed_text(draw, text, size, max_w, stroke)
+        line_h = int(size * 1.15)
+        if len(lines) <= 2 and line_h * len(lines) <= max_h:
+            chosen = (size, lines, line_h)
+            break
+    if chosen is None:
+        size = max(18, int((bottom-top) * 0.30))
+        lines = _wrap_mixed_text(draw, text, size, max_w, stroke)[:2]
+        chosen = (size, lines, int(size * 1.15))
+    size, lines, line_h = chosen
+    y = top + (bottom - top - line_h * len(lines)) // 2
+    for line in lines:
+        fonts = [_load_font_for_word(word, size) for word in line]
+        word_widths = [draw.textlength(word, font=font) for word, font in zip(line, fonts)]
+        gap = size * 0.18
+        total_w = sum(word_widths) + gap * max(0, len(line) - 1)
+        x = left + (right - left - total_w) / 2
+        for word, font, word_w in zip(line, fonts, word_widths):
+            draw.text((int(x), int(y)), word, font=font, fill=fill,
+                      stroke_width=stroke, stroke_fill=stroke_fill)
+            x += word_w + gap
+        y += line_h
+
+
 def create_thumbnail(video_path, title, output_path, content_type=None, shorts=False):
     """Long thumbnail 1280x720; Reel/Shorts cover 1080x1920."""
     frame_path = output_path.rsplit('.', 1)[0] + '_frame.png'
@@ -1098,38 +1148,61 @@ def create_thumbnail(video_path, title, output_path, content_type=None, shorts=F
             if bg is None:
                 bg = Image.new('RGB', (width, height), (15, 23, 42))
 
-        # Headline ko reference thumbnail ki tarah TOP par rakho;
-        # neeche ka black caption strip bilkul mat banao.
         draw = ImageDraw.Draw(bg)
-        clean_title = re.sub(r'[\U00010000-\U0010FFFF☀-➿️‍]', '', title or '')
-        clean_title = re.sub(r'\s+', ' ', clean_title).strip()[:120] or "सरकारी नौकरी अपडेट"
-        stroke, max_width = 3, width - (90 if shorts else 100)
-        max_lines = 3 if shorts else 2
-        top_area_h = int(height * (0.22 if shorts else 0.18))
-        chosen = None
-        for size in range(92 if shorts else 76, 29, -3):
-            lines = _wrap_mixed_text(draw, clean_title, size, max_width, stroke)
-            line_h = int(size * 1.18)
-            if len(lines) <= max_lines and line_h * len(lines) <= top_area_h - 12:
-                chosen = (size, lines, line_h)
-                break
-        if chosen is None:
-            size = 30 if shorts else 28
-            lines = _wrap_mixed_text(draw, clean_title, size, max_width, stroke)[:max_lines]
-            chosen = (size, lines, int(size * 1.18))
-        size, lines, line_h = chosen
-        total_h = line_h * len(lines)
-        y = max(12, (top_area_h - total_h) // 2)
-        for line in lines:
-            fonts = [_load_font_for_word(word, size) for word in line]
-            widths = [draw.textlength(word, font=font) for word, font in zip(line, fonts)]
-            gap = size * 0.18
-            x = max(24, (width - sum(widths) - gap * max(0, len(line) - 1)) / 2)
-            for word, font, word_width in zip(line, fonts, widths):
-                draw.text((int(x), y), word, font=font, fill=(255, 193, 7),
-                          stroke_width=stroke, stroke_fill=(0, 0, 0))
-                x += word_width + gap
-            y += line_h
+        clean_title = _clean_thumbnail_text(title)[:120] or "सरकारी नौकरी अपडेट"
+
+        if not shorts:
+            # Red outlines shown in the user's guide images are NOT part of the templates.
+            # Text is placed only inside those indicated blank areas.
+            if kind == "result":
+                parts = _split_thumbnail_title(clean_title, 2)
+                _draw_text_in_box(draw, parts[0],
+                                  (0.063, 0.085, 0.586, 0.337),
+                                  width, height, fill=(255, 255, 255))
+                if len(parts) > 1:
+                    _draw_text_in_box(draw, parts[1],
+                                      (0.124, 0.350, 0.545, 0.515),
+                                      width, height, fill=(35, 27, 18))
+            elif kind == "admit":
+                parts = _split_thumbnail_title(clean_title, 2)
+                _draw_text_in_box(draw, parts[0],
+                                  (0.071, 0.037, 0.557, 0.228),
+                                  width, height, fill=(20, 20, 20))
+                if len(parts) > 1:
+                    _draw_text_in_box(draw, parts[1],
+                                      (0.082, 0.219, 0.603, 0.350),
+                                      width, height, fill=(25, 25, 25))
+            else:
+                _draw_text_in_box(draw, clean_title,
+                                  (0.040, 0.024, 0.685, 0.222),
+                                  width, height, fill=(255, 255, 255))
+        else:
+            # 9:16 cover: keep its existing vertical headline treatment unchanged.
+            stroke, max_width = 3, width - 90
+            chosen = None
+            for size in range(92, 29, -3):
+                lines = _wrap_mixed_text(draw, clean_title, size, max_width, stroke)
+                line_h = int(size * 1.18)
+                if len(lines) <= 3 and line_h * len(lines) <= int(height * 0.22) - 12:
+                    chosen = (size, lines, line_h)
+                    break
+            if chosen is None:
+                size = 30
+                chosen = (size, _wrap_mixed_text(draw, clean_title, size, max_width, stroke)[:3],
+                          int(size * 1.18))
+            size, lines, line_h = chosen
+            y = max(12, (int(height * 0.22) - line_h * len(lines)) // 2)
+            for line in lines:
+                fonts = [_load_font_for_word(word, size) for word in line]
+                widths = [draw.textlength(word, font=font) for word, font in zip(line, fonts)]
+                gap = size * 0.18
+                x = max(24, (width - sum(widths) - gap * max(0, len(line) - 1)) / 2)
+                for word, font, word_width in zip(line, fonts, widths):
+                    draw.text((int(x), y), word, font=font, fill=(255, 193, 7),
+                              stroke_width=stroke, stroke_fill=(0, 0, 0))
+                    x += word_width + gap
+                y += line_h
+
         quality = 92
         bg.save(output_path, 'JPEG', quality=quality, optimize=True)
         while os.path.getsize(output_path) > 2 * 1024 * 1024 and quality > 50:
@@ -1146,7 +1219,6 @@ def create_thumbnail(video_path, title, output_path, content_type=None, shorts=F
                 os.remove(frame_path)
             except Exception:
                 pass
-
 
 def prepend_cover_frame(video_path, cover_path, seconds=1.5):
     """Designed 9:16 cover ko reel ka first frame banata hai (Buffer API custom image accept nahi karta)."""
