@@ -1372,11 +1372,27 @@ def run_shorts_pipeline(post_url, shorts_title, shorts_script, shorts_desc, shor
                 send_telegram("⚠️ Hinglish subtitle nahi lag paye, reel bina subtitle ke ja rahi hai.")
         except Exception as e:
             send_telegram(f"⚠️ Subtitle step me error (reel bina subtitle ke jayegi): {e}")
-        # 9:16 custom cover banao; Buffer ke liye ise video ka first frame bhi rakho.
+        # BK GrowUp ka ek hi permanent 9:16 cover sabhi Reels par use hoga.
+        # File path: thumbnail_templates/bk_growup_cover.png
+        # Cover par koi title/text overlay nahi lagaya jayega.
         thumb_file = video_file.replace(".mp4", "_thumbnail.jpg")
-        if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type, shorts=True):
+        fixed_cover = os.path.join(THUMB_TEMPLATE_DIR, "bk_growup_cover.png")
+        if os.path.exists(fixed_cover):
+            try:
+                cover = _fit_template(Image.open(fixed_cover).convert("RGB"), 1080, 1920)
+                cover.save(thumb_file, "JPEG", quality=95, optimize=True)
+                print("🖼️ BK GrowUp fixed 9:16 cover loaded (same cover for every Reel).")
+            except Exception as cover_error:
+                print(f"⚠️ Fixed BK GrowUp cover load failed; using generated fallback: {cover_error}")
+                if not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type, shorts=True):
+                    thumb_file = None
+        elif not create_thumbnail(video_file, shorts_title, thumb_file, content_type=content_type, shorts=True):
             thumb_file = None
         else:
+            print("⚠️ Fixed BK GrowUp cover missing; generated fallback thumbnail used.")
+
+        # Buffer custom cover image directly accept nahi karta: first 1.5 sec me cover frame rakho.
+        if thumb_file:
             prepend_cover_frame(video_file, thumb_file, seconds=1.5)
         # Cover frame ke saath final reel ko Buffer queue me bhejo.
         try:
