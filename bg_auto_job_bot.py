@@ -521,6 +521,7 @@ FABLE_BACKOFF_SECONDS = [45, 90, 180]    # 429 par progressive cooldown; Retry-A
 FABLE_MAX_RETRIES = 3
 EDGE_TTS_MAX_RETRIES = 4
 EDGE_TTS_RETRY_DELAYS = [8, 20, 40]
+EDGE_TTS_CHUNK_GAP_SECONDS = 3
 FABLE_BLOCKED = False                    # persistent 429/error par is run ke liye Fable circuit-break
 
 
@@ -695,6 +696,9 @@ def _synthesize_chunks(chunks, temp_dir, use_fable):
                 return None
         else:
             try:
+                if idx > 1 and EDGE_TTS_CHUNK_GAP_SECONDS:
+                    print(f"⏳ Edge TTS chunk gap: {EDGE_TTS_CHUNK_GAP_SECONDS}s")
+                    time.sleep(EDGE_TTS_CHUNK_GAP_SECONDS)
                 print(f"🔊 Generating Part {idx}/{len(chunks)} via Edge TTS ({EDGE_TTS_MAX_RETRIES} retry-safe attempts)...")
                 generate_edge_tts_voice(chunk, part_filename)
                 if not os.path.exists(part_filename) or os.path.getsize(part_filename) < 1024:
