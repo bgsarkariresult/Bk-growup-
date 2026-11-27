@@ -516,9 +516,12 @@ def split_script_into_chunks(script, max_chars=MAX_CHUNK_CHARACTERS):
 # 6. OpenAI.fm Direct API + Edge TTS Fallback (FIXED)
 # ==========================================
 # OpenAI.fm 429 (Too Many Requests) se bachne ke settings
-FABLE_CHUNK_GAP_SECONDS = 4              # do chunks ke beech itna gap
-FABLE_BACKOFF_SECONDS = [10, 25, 45]     # 429 aane par attempt 1/2/3 ke baad itna ruko (Retry-After ho to wo bhi dekha jata hai)
-FABLE_BLOCKED = False                    # is run me OpenAI.fm fail/rate-limit hua to baaki awaazein seedhe Edge TTS se banengi
+FABLE_CHUNK_GAP_SECONDS = 12             # OpenAI.fm ko requests ke beech zyada breathing room
+FABLE_BACKOFF_SECONDS = [45, 90, 180]    # 429 par progressive cooldown; Retry-After ko priority
+FABLE_MAX_RETRIES = 3
+EDGE_TTS_MAX_RETRIES = 4
+EDGE_TTS_RETRY_DELAYS = [8, 20, 40]
+FABLE_BLOCKED = False                    # persistent 429/error par is run ke liye Fable circuit-break
 
 
 class OpenAIFmRateLimited(Exception):
@@ -529,9 +532,17 @@ class OpenAIFmRateLimited(Exception):
 
 
 def _retry_after_seconds(response):
+    """Retry-After ko seconds ya HTTP-date dono formats me padhe."""
+    raw = response.headers.get("Retry-After", "")
     try:
-        return int(float(response.headers.get("Retry-After", "")))
+        return max(0, int(float(raw)))
     except (TypeError, ValueError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        retry_at = parsedate_to_datetime(raw)
+        return max(0, int(retry_at.timestamp() - time.time()))
+    except Exception:
         return None
 
 
@@ -561,8 +572,10 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
 
         response = requests.post(url, files=files, headers=headers, timeout=90, stream=True)
         if response.status_code == 429:
-            # GET se dobara try karne par rate limit aur badhta hai, isliye seedha ruk kar retry
-            raise OpenAIFmRateLimited(_retry_after_seconds(response))
+            # 429 par GET request bilkul mat bhejo; response close karke caller cooldown karega.
+            retry_after = _retry_after_seconds(response)
+            response.close()
+            raise OpenAIFmRateLimited(retry_after)
 
         # Fallback to GET if POST fails
         if response.status_code != 200:
@@ -573,7 +586,9 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
             }
             response = requests.get(url, params=params, headers=headers, timeout=90, stream=True)
             if response.status_code == 429:
-                raise OpenAIFmRateLimited(_retry_after_seconds(response))
+                retry_after = _retry_after_seconds(response)
+                response.close()
+                raise OpenAIFmRateLimited(retry_after)
 
         response.raise_for_status()
 
@@ -602,16 +617,41 @@ def generate_fable_voice_openai_fm(text_chunk, output_path):
 
 
 def generate_edge_tts_voice(text, output_audio_path):
+    """Edge TTS ko transient NoAudioReceived/network errors par retry karta hai."""
     voice = "hi-IN-MadhurNeural"
-   
+
     async def _save():
         communicate = edge_tts.Communicate(text, voice, rate="+0%")
         await communicate.save(output_audio_path)
-       
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(_save())
-    loop.close()
+
+    last_error = None
+    for attempt in range(1, EDGE_TTS_MAX_RETRIES + 1):
+        try:
+            if os.path.exists(output_audio_path):
+                os.remove(output_audio_path)
+            # Har attempt ka fresh event loop/socket session rakho.
+            asyncio.run(_save())
+            if not os.path.exists(output_audio_path):
+                raise RuntimeError("Edge TTS ne output file create nahi ki.")
+            size = os.path.getsize(output_audio_path)
+            if size < 1024:
+                raise RuntimeError(f"Edge TTS output bahut chhota/incomplete hai ({size} bytes).")
+            print(f"✅ Edge TTS {voice}: Part audio ready ({size} bytes), attempt {attempt}.")
+            return True
+        except Exception as e:
+            last_error = e
+            if os.path.exists(output_audio_path):
+                try:
+                    os.remove(output_audio_path)
+                except OSError:
+                    pass
+            if attempt < EDGE_TTS_MAX_RETRIES:
+                wait = EDGE_TTS_RETRY_DELAYS[min(attempt - 1, len(EDGE_TTS_RETRY_DELAYS) - 1)]
+                print(f"⚠️ Edge TTS {voice} attempt {attempt}/{EDGE_TTS_MAX_RETRIES} failed: {e}. {wait}s baad retry.")
+                time.sleep(wait)
+            else:
+                print(f"❌ Edge TTS {voice} all {EDGE_TTS_MAX_RETRIES} attempts failed: {e}")
+    raise RuntimeError(f"Edge TTS {voice} failed after retries: {last_error}")
 
 
 def _synthesize_chunks(chunks, temp_dir, use_fable):
@@ -627,28 +667,38 @@ def _synthesize_chunks(chunks, temp_dir, use_fable):
             if idx > 1:
                 time.sleep(FABLE_CHUNK_GAP_SECONDS)  # lagatar requests se 429 na aaye
             ok = False
-            for attempt in range(1, MAX_RETRIES + 1):
-                print(f"🎙️ Generating Part {idx}/{len(chunks)} ({len(chunk)} chars) with OpenAI.fm (Fable Voice) - Attempt {attempt}...")
+            for attempt in range(1, FABLE_MAX_RETRIES + 1):
+                print(f"🎙️ Generating Part {idx}/{len(chunks)} ({len(chunk)} chars) with OpenAI.fm (Fable Voice) - Attempt {attempt}/{FABLE_MAX_RETRIES}...")
                 try:
-                    if generate_fable_voice_openai_fm(chunk, part_filename) and os.path.getsize(part_filename) >= 8000:
+                    if os.path.exists(part_filename):
+                        os.remove(part_filename)
+                    if generate_fable_voice_openai_fm(chunk, part_filename) and os.path.exists(part_filename) and os.path.getsize(part_filename) >= 8000:
                         ok = True
                         break
-                    print(f"⚠️ Part {idx} audio adhoora/chhota mila. Retrying...")
-                    time.sleep(2)
+                    print(f"⚠️ Part {idx} audio adhoora/chhota mila.")
+                    if attempt < FABLE_MAX_RETRIES:
+                        time.sleep(min(10 * attempt, 30))
                 except OpenAIFmRateLimited as e:
-                    if attempt < MAX_RETRIES:
-                        wait = min(max(e.retry_after or 0, FABLE_BACKOFF_SECONDS[min(attempt - 1, len(FABLE_BACKOFF_SECONDS) - 1)]), 90)
-                        print(f"⏳ OpenAI.fm rate limit (429) — {wait}s ruk kar dobara try karte hain...")
+                    if attempt < FABLE_MAX_RETRIES:
+                        backoff = FABLE_BACKOFF_SECONDS[min(attempt - 1, len(FABLE_BACKOFF_SECONDS) - 1)]
+                        wait = min(max(e.retry_after or 0, backoff), 240)
+                        print(f"⏳ OpenAI.fm HTTP 429 — {wait}s cooldown; phir ek baar retry.")
                         time.sleep(wait)
                     else:
-                        print("⚠️ OpenAI.fm rate limit (429) abhi bhi aa raha hai.")
+                        print("⚠️ OpenAI.fm HTTP 429 cooldown ke baad bhi aa raha hai.")
+                except Exception as e:
+                    print(f"⚠️ OpenAI.fm Part {idx} error: {e}")
+                    if attempt < FABLE_MAX_RETRIES:
+                        time.sleep(min(10 * attempt, 30))
             if not ok:
                 print("⚠️ OpenAI.fm voice generation failed. Falling back to Edge TTS (hi-IN-MadhurNeural) for the whole audio.")
                 return None
         else:
             try:
-                print(f"🔊 Generating Part {idx}/{len(chunks)} via Edge TTS...")
+                print(f"🔊 Generating Part {idx}/{len(chunks)} via Edge TTS ({EDGE_TTS_MAX_RETRIES} retry-safe attempts)...")
                 generate_edge_tts_voice(chunk, part_filename)
+                if not os.path.exists(part_filename) or os.path.getsize(part_filename) < 1024:
+                    raise RuntimeError("Edge TTS output validation failed.")
             except Exception as e:
                 print(f"❌ Part {idx} generation completely failed: {e}")
                 return None
